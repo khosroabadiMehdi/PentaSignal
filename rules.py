@@ -82,7 +82,6 @@ def list_scenarios() -> List[dict]:
             "weight_threshold": sc["weight_threshold"],
             "min_rules": sc["min_passed_rules"],
             "cooldown_h": sc["cooldown_seconds"] // 3600,
-            "risk_level": sc.get("risk_level", "LOW"),
             "direction_only": sc.get("direction_only"),
         })
     return result
@@ -324,16 +323,17 @@ def rule_range_filter(ema21_30m: float, ema50_30m: float, price_30m: float) -> R
 
 
 # ===== GHANUN-E JADID: FILTER-E RANJ-E TARKIBI (NESKHEH S8 - OR) =====
-def rule_combined_range_filter(diff: float, adx: float, direction: str) -> RuleResult:
+def rule_combined_range_filter(diff: float, adx: float, direction: str, mode: str = "OR") -> RuleResult:
     """
-    Agar faseleh EMA kamtar-e az 0.003 ya ADX kamtar-e az 22 bashad, signal rad mishavad.
-    In neskheh az OR estefadeh mikonad (sakht-girane-tar)
+    mode=OR  (سخت): اگر diff<0.003 یا ADX<22 → رد
+    mode=AND (شل‌تر برای S1/S2/S3): فقط اگر diff<0.003 و ADX<22 → رد
     """
-    if direction == "LONG":
-        ok = not (diff < 0.003 or adx < 22)
+    if mode == "AND":
+        bad = (diff < 0.003 and adx < 22)
     else:
-        ok = not (diff < 0.003 or adx < 22)
-    detail = f"diff={diff:.4f}, ADX={adx:.2f} -> {'OK' if ok else 'RAD'}"
+        bad = (diff < 0.003 or adx < 22)
+    ok = not bad
+    detail = f"diff={diff:.4f}, ADX={adx:.2f}, mode={mode} -> {'OK' if ok else 'RAD'}"
     return RuleResult("filter-e ranj-e tarkibi", ok, detail)
 
 
@@ -401,7 +401,8 @@ def evaluate_rules(
     macd_hist_30m: float, rsi_30m: float,
     vol_spike_factor: float, divergence_detected: bool,
     candles: list, prices_series_30m: list, closes_by_tf: dict,
-    adx_value: float
+    adx_value: float,
+    range_filter_mode: str = "OR",
 ) -> Tuple[List[RuleResult], float, float]:
 
     # Mohasebeh faseleh EMA baraye filter-e tarkibi
@@ -424,7 +425,7 @@ def evaluate_rules(
         rule_pullback(prices_series_30m, direction),
         rule_double_top_bottom(prices_series_30m),
         rule_range_filter(ema21_30m, ema50_30m, price_30m),
-        rule_combined_range_filter(diff, adx_value, direction),
+        rule_combined_range_filter(diff, adx_value, direction, mode=range_filter_mode),
     ]
 
     weights = RISK_FACTORS.get(risk, {})
@@ -486,10 +487,6 @@ async def generate_signal(
         logger.info(f"Senario {scenario_id}: rad shod - jhat {direction} != {scenario['direction_only']}")
         return None
     
-    # ===== FILTER-E RISK LEVEL (FAGHAT LOW) =====
-    if scenario and prefer_risk != scenario["risk_level"]:
-        logger.info(f"Senario {scenario_id}: rad shod - risk {prefer_risk} != {scenario['risk_level']}")
-        return None
     
     # ===== FILTER-E SYMBOL =====
     if scenario and scenario["symbols_list"] is not None:
@@ -548,11 +545,19 @@ async def generate_signal(
                 logger.info(f"Senario {scenario_id}: رد - close_pos={close_pos:.2f} برای SHORT")
                 return None
 
-    risk_rules = next((r["rules"] for r in RISK_LEVELS if r["key"] == prefer_risk), RISK_LEVELS[1]["rules"])
+    # پروفایل قوانین از سناریو (بدون نمایش سطح ریسک)
+    if scenario:
+        profile = scenario.get("rule_profile", "strict")
+        internal_risk = "LOW" if profile == "strict" else "MEDIUM"
+        range_mode = scenario.get("range_filter_mode", "OR")
+    else:
+        internal_risk = prefer_risk or "MEDIUM"
+        range_mode = "OR"
+    risk_rules = next((r["rules"] for r in RISK_LEVELS if r["key"] == internal_risk), RISK_LEVELS[1]["rules"])
     rule_results, passed_weight, total_weight = evaluate_rules(
         symbol=symbol,
         direction=direction,
-        risk=prefer_risk,
+        risk=internal_risk,
         risk_rules=risk_rules,
         price_30m=price_30m,
         open_15m=open_15m, close_15m=close_15m, high_15m=high_15m, low_15m=low_15m,
@@ -568,7 +573,8 @@ async def generate_signal(
         candles=candles,
         prices_series_30m=prices_series_30m,
         closes_by_tf=closes_by_tf,
-        adx_value=adx
+        adx_value=adx,
+        range_filter_mode=range_mode,
     )
 
     strength_ratio = passed_weight / total_weight if total_weight > 0 else 0
@@ -608,15 +614,8 @@ async def generate_signal(
         stop_loss = swing_high + buffer if swing_high is not None else price_30m + atr_val_30m * atr_mult
         take_profit = price_30m - (stop_loss - price_30m) * rr_target
 
-    # ===== TAEIN-E RISK LEVEL NAHAYI =====
-    core_rules = ["rawand EMA 1h", "rawand EMA 4h", "ADX", "RSI 30m"]
-    core_passed = all(any(r.name == cr and r.passed for r in rule_results) for cr in core_rules)
-    if core_passed:
-        final_risk = "LOW"
-    elif passed_weight >= total_weight * 0.45:
-        final_risk = "MEDIUM"
-    else:
-        final_risk = "HIGH"
+    # سطح ریسک حذف شده — فقط سناریو
+    final_risk = ""
 
     # ===== TAEIN-E VOZUD-E SIGNAL =====
     if scenario:
@@ -653,7 +652,7 @@ async def generate_signal(
     signal_dict = {
         "symbol": symbol,
         "direction": direction,
-        "risk": final_risk,
+        "risk": "",
         "status": status,
         "strength": passed_weight / total_weight if status == "SIGNAL" else None,
         "price": price_30m,
@@ -682,33 +681,33 @@ async def generate_signal(
                 _last_signal_times[sc_id] = {}
             _last_signal_times[sc_id][symbol] = time.time()
 
+        sc_name = ""
+        sc_id_val = ""
+        if scenario:
+            sc_id_val = scenario.get("id", scenario_id or "")
+            sc_name = f"{scenario['name_fa']} ({scenario['name_en']})"
+
         append_signal_row(
             symbol=symbol,
             direction=direction,
-            risk_level_name=final_risk,
             entry_price=price_30m,
             stop_loss=stop_loss,
             take_profit=take_profit,
             issued_at_tehran=time_str,
             signal_source=";".join([str(r) for r in rule_results]),
-            position_size_usd=10.0
+            scenario_id=sc_id_val,
+            scenario_name=sc_name,
+            position_size_usd=10.0,
         )
 
-        dir_icon = "\U0001f7e2" if direction == "LONG" else "\U0001f534"
-        risk_icon_map = {
-            "LOW": "\U0001f6e1\ufe0f mohafazeh-kar",
-            "MEDIUM": "\u2696\ufe0f motevaset",
-            "HIGH": "\U0001f525 tahajomi"
-        }
-        risk_label = risk_icon_map.get(final_risk, "\u2696\ufe0f motevaset")
+        dir_icon = "🟢" if direction == "LONG" else "🔴"
 
-        # Saakht-e payam-e telegram
         sc_header = ""
         if scenario:
             personality = scenario.get("personality", "")
             sc_header = (
                 f"──────────────────\n"
-                f"🏆 سناریو {scenario_id}: {scenario['name_fa']} ({scenario['name_en']})\n"
+                f"🏆 سناریو {scenario['name_fa']} ({scenario['name_en']})\n"
                 f"🎭 شخصیت: {personality}\n"
                 f"🎯 RR={scenario['rr']} | آستانه وزن≥{scenario['weight_threshold']*100:.0f}% | "
                 f"حداقل قانون≥{scenario['min_passed_rules']} | "
@@ -718,21 +717,21 @@ async def generate_signal(
 
         msg = (
             f"{sc_header}"
-            f"\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\n"
-            f"\U0001f4ca Signal {symbol}\n"
-            f"Jhat: {dir_icon} {direction}\n"
-            f"Risk: {risk_label}\n"
-            f"Vorud: {price_30m:.4f}\n"
-            f"Stop: {stop_loss:.4f}\n"
-            f"Target: {take_profit:.4f}\n"
-            f"Zaman: {time_str}\n"
-            f"\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\n"
-            f"\U0001f4cb Ghavanin-e pass-shodeh: vazn={passed_weight}/{total_weight} | tedad={passed_rules_count}/{total_rules}\n"
-            + "\n".join([f"\u2705 {r.name} -> {r.detail}" for r in rule_results if r.passed]) + "\n"
-            f"\u274c Ghavanin-e rad-shodeh ({failed_rules_count}):\n"
-            + "\n".join([f"\u274c {r.name} -> {r.detail}" for r in rule_results if not r.passed])
+            f"───────────\n"
+            f"📊 سیگنال {symbol}\n"
+            f"جهت: {dir_icon} {direction}\n"
+            f"ورود: {price_30m:.4f}\n"
+            f"استاپ: {stop_loss:.4f}\n"
+            f"تارگت: {take_profit:.4f}\n"
+            f"زمان: {time_str}\n"
+            f"───────────\n"
+            f"📋 قوانین پاس‌شده: وزن={passed_weight}/{total_weight} | تعداد={passed_rules_count}/{total_rules}\n"
+            + "\n".join([f"✅ {r.name} → {r.detail}" for r in rule_results if r.passed]) + "\n"
+            f"❌ قوانین ردشده ({failed_rules_count}):\n"
+            + "\n".join([f"❌ {r.name} → {r.detail}" for r in rule_results if not r.passed])
         )
         await send_to_telegram(msg)
+
 
     return signal_dict
 
