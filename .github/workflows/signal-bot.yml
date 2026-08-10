@@ -9,12 +9,17 @@ on:
 jobs:
   run:
     runs-on: ubuntu-latest
+    permissions:
+      contents: write   # لازم برای push کردن CSV توسط github-actions[bot]
+
     steps:
       - name: Checkout repo
         uses: actions/checkout@v4
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Set up Python
-        uses: actions/setup-python@v4
+        uses: actions/setup-python@v5
         with:
           python-version: '3.11'
 
@@ -35,6 +40,7 @@ jobs:
         with:
           name: bot-log
           path: bot_log.txt
+          if-no-files-found: ignore
 
       - name: Commit daily CSV
         uses: stefanzweifel/git-auto-commit-action@v5
