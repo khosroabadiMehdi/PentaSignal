@@ -1,356 +1,407 @@
-# monitor_nightly.py
+# monitor_nightly.py — PentaSignal
+# بررسی امروز + دو روز قبل | CLOSED_MANUAL فقط بعد از بیش از ۲ روز
+# گزارش: ۶ پیام (کلیات + ۵ سناریو)
+
 import csv
 import os
 import time
 import requests
-import subprocess  # برای git commit/push
-import aiohttp
 import logging
+import asyncio
 from datetime import datetime, timedelta
 from zoneinfo import ZoneInfo
-from config import TELEGRAM_BOT_TOKEN, TELEGRAM_CHAT_ID  # فرض بر این است که config.py این‌ها را دارد
+from collections import defaultdict
+
+from config import TELEGRAM_BOT_TOKEN, TELEGRAM_CHAT_ID, SCENARIOS, ACTIVE_SCENARIOS
 
 KUCOIN_URL = "https://api.kucoin.com/api/v1/market/candles"
-
 SIGNALS_DIR = "signals"
-CSV_HEADERS = [
-    "symbol", "direction", "risk_level", "entry_price", "stop_loss", "take_profit",
-    "issued_at_tehran", "status", "hit_time_tehran", "hit_price",
-    "broker_fee", "final_pnl_usd", "position_size_usd", "return_pct",
-    "signal_source"
-]
 
-BROKER_FEE_RATE = 0.001  # 0.1% برای ورود و خروج
-SLIPPAGE_PCT = 0.0005    # 0.05% لغزش
+BROKER_FEE_RATE = 0.001
+POSITION_SIZE_USD = 10.0
+MAX_OPEN_DAYS = 2
 
 logger = logging.getLogger(__name__)
+logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
+
 
 def tehran_now():
     return datetime.now(ZoneInfo("Asia/Tehran"))
 
-def parse_tehran_time(s):
-    tz = ZoneInfo("Asia/Tehran")
-    return datetime.fromisoformat(s).replace(tzinfo=tz)
 
-def daily_csv_path(date_str):
+def parse_tehran_time(s: str):
+    tz = ZoneInfo("Asia/Tehran")
+    s = (s or "").strip()
+    if not s:
+        return None
+    try:
+        return datetime.fromisoformat(s).replace(tzinfo=tz)
+    except Exception:
+        try:
+            return datetime.strptime(s, "%Y-%m-%d %H:%M:%S").replace(tzinfo=tz)
+        except Exception:
+            return None
+
+
+def daily_csv_path(date_str: str) -> str:
     return os.path.join(SIGNALS_DIR, f"{date_str}.csv")
+
 
 def fetch_kucoin_1m(symbol, start_at_unix, end_at_unix):
     params = {
         "symbol": symbol,
         "type": "1min",
-        "startAt": start_at_unix,
-        "endAt": end_at_unix
+        "startAt": int(start_at_unix),
+        "endAt": int(end_at_unix),
     }
     try:
         r = requests.get(KUCOIN_URL, params=params, timeout=20)
         if r.status_code == 200:
             data = r.json().get("data", [])
             candles = [{
-                't': int(c[0]),
-                'o': float(c[1]),
-                'c': float(c[2]),
-                'h': float(c[3]),
-                'l': float(c[4]),
-                'v': float(c[5])
+                "t": int(c[0]),
+                "o": float(c[1]),
+                "c": float(c[2]),
+                "h": float(c[3]),
+                "l": float(c[4]),
+                "v": float(c[5]),
             } for c in data]
             return list(reversed(candles))
-        elif r.status_code == 429:
-            print(f"⚠️ Rate limit برای {symbol} — ۱۰ ثانیه صبر...")
+        if r.status_code == 429:
             time.sleep(10)
             return fetch_kucoin_1m(symbol, start_at_unix, end_at_unix)
-        else:
-            print(f"❌ خطای HTTP {r.status_code} برای {symbol}")
     except Exception as e:
-        print(f"❌ خطا در دریافت کندل 1m {symbol}: {e}")
+        print(f"error fetch 1m {symbol}: {e}")
     return []
 
-def compute_pnl_usd(direction, entry_price, exit_price, position_size_usd, fee_rate=BROKER_FEE_RATE):
+
+def compute_pnl_usd(direction, entry_price, exit_price, position_size_usd=POSITION_SIZE_USD, fee_rate=BROKER_FEE_RATE):
     fee_total = position_size_usd * fee_rate * 2.0
-    ret_pct = (exit_price - entry_price) / entry_price if direction == "LONG" else (entry_price - exit_price) / entry_price
-    gross_pnl = position_size_usd * ret_pct
-    net_pnl = gross_pnl - fee_total
-    return net_pnl, ret_pct * 100.0, fee_total
-
-# تابع تولید گزارش روزانه - فقط TP_HIT و STOP_HIT محاسبه می‌شوند
-def generate_daily_report(date_str):
-    path = daily_csv_path(date_str)
-    if not os.path.isfile(path):
-        return f"⚠️ فایل CSV برای {date_str} یافت نشد."
-
-    with open(path, mode="r", newline="", encoding="utf-8") as f:
-        reader = csv.DictReader(f)
-        all_signals = list(reader)
-
-    # فقط سیگنال‌های hit شده (TP یا SL فعال شده)
-    filtered_signals = [
-        s for s in all_signals
-        if s.get("status") in ["TP_HIT", "STOP_HIT"]
-    ]
-
-    hit_count = len(filtered_signals)
-    if hit_count == 0:
-        return f"📊 برای تاریخ {date_str} هیچ سیگنال hit شده (TP_HIT یا STOP_HIT) وجود ندارد.\n" \
-               f"(OPEN و CLOSED_MANUAL در گزارش روزانه نادیده گرفته می‌شوند)"
-
-    # آمار فقط روی hit شده‌ها
-    long_count = sum(1 for s in filtered_signals if s.get("direction") == "LONG")
-    short_count = sum(1 for s in filtered_signals if s.get("direction") == "SHORT")
-    low_risk = sum(1 for s in filtered_signals if s.get("risk_level") == "LOW")
-    medium_risk = sum(1 for s in filtered_signals if s.get("risk_level") == "MEDIUM")
-    high_risk = sum(1 for s in filtered_signals if s.get("risk_level") == "HIGH")
-    tp_hit_count = sum(1 for s in filtered_signals if s.get("status") == "TP_HIT")
-    stop_hit_count = sum(1 for s in filtered_signals if s.get("status") == "STOP_HIT")
-
-    # PNL فقط برای hit شده‌ها
-    total_pnl = sum(float(s["final_pnl_usd"]) for s in filtered_signals)
-    avg_pnl = total_pnl / hit_count
-    success_rate = (tp_hit_count / hit_count * 100) if hit_count > 0 else 0.0
-
-    # بهترین و بدترین
-    if filtered_signals:
-        best_pnl = max(float(s["final_pnl_usd"]) for s in filtered_signals)
-        worst_pnl = min(float(s["final_pnl_usd"]) for s in filtered_signals)
-        best_symbol = next((s["symbol"] for s in filtered_signals if float(s["final_pnl_usd"]) == best_pnl), "N/A")
-        worst_symbol = next((s["symbol"] for s in filtered_signals if float(s["final_pnl_usd"]) == worst_pnl), "N/A")
+    if direction == "LONG":
+        ret_pct = (exit_price - entry_price) / entry_price if entry_price else 0.0
     else:
-        best_pnl = worst_pnl = 0.0
-        best_symbol = worst_symbol = "N/A"
+        ret_pct = (entry_price - exit_price) / entry_price if entry_price else 0.0
+    gross = position_size_usd * ret_pct
+    net = gross - fee_total
+    return net, ret_pct * 100.0, fee_total
 
-    # گزارش شکیل با Markdown
-    report = f"📅 **#گزارش روزانه_سیگنال‌های Hit شده - تاریخ: {date_str}**\n\n"
-    report += f"🔢 **تعداد سیگنال‌های فعال‌شده (TP یا SL)**: {hit_count}\n"
-    report += f"   - 🟢 LONG: {long_count} ({long_count/hit_count*100:.1f}%)\n"
-    report += f"   - 🔴 SHORT: {short_count} ({short_count/hit_count*100:.1f}%)\n\n"
-    report += f"📊 **سطوح ریسک** (فقط در سیگنال‌های hit شده):\n"
-    report += f"   - 🟢 LOW: {low_risk} ({low_risk/hit_count*100:.1f}%)\n"
-    report += f"   - 🟡 MEDIUM: {medium_risk} ({medium_risk/hit_count*100:.1f}%)\n"
-    report += f"   - 🔴 HIGH: {high_risk} ({high_risk/hit_count*100:.1f}%)\n\n"
-    report += f"🛡️ **وضعیت Hit**:\n"
-    report += f"   - ✅ TP_HIT: {tp_hit_count} ({tp_hit_count/hit_count*100:.1f}%)\n"
-    report += f"   - ❌ STOP_HIT: {stop_hit_count} ({stop_hit_count/hit_count*100:.1f}%)\n\n"
-    report += f"💹 **عملکرد مالی (فقط TP_HIT و STOP_HIT)**:\n"
-    report += f"   - نرخ موفقیت (TP): {success_rate:.1f}%\n"
-    report += f"   - مجموع PNL (USD): {total_pnl:.2f}\n"
-    report += f"   - میانگین PNL هر سیگنال hit شده: {avg_pnl:.2f}\n"
-    report += f"   - بهترین نتیجه: {best_pnl:.2f} USD (نماد: {best_symbol})\n"
-    report += f"   - بدترین نتیجه: {worst_pnl:.2f} USD (نماد: {worst_symbol})\n\n"
-    report += f"ℹ️ **نکته مهم**: فقط سیگنال‌هایی که SL یا TP آن‌ها فعال شده در این گزارش محاسبه شده‌اند. سیگنال‌های OPEN و CLOSED_MANUAL کاملاً نادیده گرفته شده‌اند."
 
-    return report
-
-# تابع ارسال به تلگرام
 async def send_to_telegram(text: str):
     if not TELEGRAM_BOT_TOKEN or not TELEGRAM_CHAT_ID:
-        logger.warning("⚠️ تنظیمات تلگرام ناقص است")
+        logger.warning("telegram config missing")
+        print(text)
         return
+    import aiohttp
     url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
-    payload = {"chat_id": TELEGRAM_CHAT_ID, "text": text, "parse_mode": "Markdown"}
-
-    logger.info("📤 تلاش برای ارسال پیام تلگرام...")
+    chunks = []
+    while text:
+        if len(text) <= 4000:
+            chunks.append(text)
+            break
+        cut = text.rfind("\n", 0, 4000)
+        if cut < 500:
+            cut = 4000
+        chunks.append(text[:cut])
+        text = text[cut:].lstrip("\n")
     async with aiohttp.ClientSession() as session:
-        try:
-            async with session.post(url, json=payload, timeout=20) as resp:
-                body = await resp.text()
-                if resp.status == 200:
-                    logger.info("✅ پیام به تلگرام ارسال شد")
-                else:
-                    logger.warning(f"⚠️ خطا در ارسال تلگرام: {resp.status} | پاسخ: {body}")
-        except Exception as e:
-            logger.error(f"❌ خطا در ارسال به تلگرام: {e}")
+        for ch in chunks:
+            payload = {"chat_id": TELEGRAM_CHAT_ID, "text": ch}
+            try:
+                async with session.post(url, json=payload, timeout=20) as resp:
+                    if resp.status != 200:
+                        body = await resp.text()
+                        logger.warning(f"telegram {resp.status}: {body[:200]}")
+                    else:
+                        logger.info("nightly message sent")
+            except Exception as e:
+                logger.error(f"telegram error: {e}")
+            await asyncio.sleep(0.4)
 
-def update_csv_rows(date_str):
+
+def read_csv_rows(date_str: str):
     path = daily_csv_path(date_str)
-    file_exists = os.path.isfile(path)
+    if not os.path.isfile(path):
+        return [], None
+    with open(path, newline="", encoding="utf-8") as f:
+        reader = csv.DictReader(f)
+        fieldnames = reader.fieldnames
+        rows = list(reader)
+    return rows, fieldnames
 
-    if not file_exists:
-        print(f"⚠️ فایل روزانه یافت نشد: {path}")
-    else:
-        rows = []
-        with open(path, mode="r", newline="", encoding="utf-8") as f:
-            reader = csv.DictReader(f)
-            for row in reader:
-                rows.append(row)
 
-        tz = ZoneInfo("Asia/Tehran")
-        day_end = datetime.fromisoformat(f"{date_str} 23:59:00").replace(tzinfo=tz)
-
-        print("="*80)
-        print(f"📊 شروع مانیتور شبانه برای تاریخ {date_str}")
-        print("="*80)
-
-        updated_rows = []
+def write_csv_rows(date_str: str, fieldnames, rows):
+    path = daily_csv_path(date_str)
+    os.makedirs(SIGNALS_DIR, exist_ok=True)
+    headers = list(fieldnames or [])
+    for col in [
+        "scenario_id", "scenario_name", "symbol", "direction", "entry_price",
+        "stop_loss", "take_profit", "issued_at_tehran", "status",
+        "hit_time_tehran", "hit_price", "broker_fee", "final_pnl_usd",
+        "position_size_usd", "return_pct", "signal_source",
+    ]:
+        if col not in headers:
+            headers.append(col)
+    with open(path, "w", newline="", encoding="utf-8") as f:
+        writer = csv.DictWriter(f, fieldnames=headers, extrasaction="ignore")
+        writer.writeheader()
         for row in rows:
-            if row["status"] != "OPEN":
-                updated_rows.append(row)
-                continue
+            writer.writerow({h: row.get(h, "") for h in headers})
 
-            symbol = row["symbol"]
-            direction = row["direction"]
-            entry_price = float(row["entry_price"])
-            stop_loss = float(row["stop_loss"])
-            take_profit = float(row["take_profit"])
-            issued_at = parse_tehran_time(row["issued_at_tehran"])
-            position_size_usd = float(row.get("position_size_usd", "10"))
 
-            start_at_unix = int(issued_at.astimezone(ZoneInfo("UTC")).timestamp())
-            end_at_unix = int(day_end.astimezone(ZoneInfo("UTC")).timestamp())
+def _f(x, default=0.0):
+    try:
+        return float(x)
+    except Exception:
+        return default
 
-            candles = fetch_kucoin_1m(symbol, start_at_unix, end_at_unix)
 
-            print(f"\n🔎 بررسی سیگنال {symbol} ({direction})")
-            print(f"زمان صدور: {issued_at} | ورود: {entry_price:.6f} | SL: {stop_loss:.6f} | TP: {take_profit:.6f}")
-            print(f"تعداد کندل‌های دریافت‌شده: {len(candles)}")
+def update_open_rows_for_date(date_str: str, now_tehran: datetime):
+    rows, fieldnames = read_csv_rows(date_str)
+    if not rows:
+        return []
 
-            if candles:
-                first_dt = datetime.fromtimestamp(candles[0]['t'], tz)
-                last_dt = datetime.fromtimestamp(candles[-1]['t'], tz)
-                print(f"اولین کندل: {first_dt} | آخرین کندل: {last_dt}")
-            else:
-                print(f"⚠️ هیچ کندلی برای {symbol} دریافت نشد")
-
-            hit_status, hit_time_tehran, hit_price, exit_price = None, "", "", None
-            for c in candles:
-                candle_dt_tehran = datetime.fromtimestamp(c['t'], tz)
-                high, low = c['h'], c['l']
-                tp_hit, sl_hit = high >= take_profit, low <= stop_loss
-
-                if sl_hit and tp_hit:
-                    hit_status = "STOP_HIT"
-                    hit_price = f"{stop_loss:.8f}"
-                    hit_time_tehran = candle_dt_tehran.strftime("%Y-%m-%d %H:%M:%S")
-                    exit_price = stop_loss
-                    print(f"⚠️ همزمان TP و SL → انتخاب STOP_HIT در {hit_time_tehran}")
-                    break
-                elif sl_hit:
-                    hit_status = "STOP_HIT"
-                    hit_price = f"{stop_loss:.8f}"
-                    hit_time_tehran = candle_dt_tehran.strftime("%Y-%m-%d %H:%M:%S")
-                    exit_price = stop_loss
-                    print(f"❌ SL فعال شد در {hit_time_tehran} قیمت {hit_price}")
-                    break
-                elif tp_hit:
-                    hit_status = "TP_HIT"
-                    hit_price = f"{take_profit:.8f}"
-                    hit_time_tehran = candle_dt_tehran.strftime("%Y-%m-%d %H:%M:%S")
-                    exit_price = take_profit
-                    print(f"✅ TP فعال شد در {hit_time_tehran} قیمت {hit_price}")
-                    break
-
-            if hit_status is None:
-                last_close = candles[-1]['c'] if candles else entry_price
-                hit_status = "CLOSED_MANUAL"
-                hit_price = f"{last_close:.8f}"
-                hit_time_tehran = day_end.strftime("%Y-%m-%d %H:%M:%S")
-                exit_price = last_close
-                print(f"📭 سیگنال دستی بسته شد در پایان روز {hit_time_tehran} قیمت {hit_price}")
-
-            final_pnl_usd, return_pct, broker_fee = compute_pnl_usd(direction, entry_price, exit_price, position_size_usd)
-            print(f"📈 نتیجه: {hit_status} | سود/زیان نهایی: {final_pnl_usd:.4f} USD | بازده: {return_pct:.2f}% | کارمزد: {broker_fee:.4f} USD")
-
-            row.update({
-                "status": hit_status,
-                "hit_price": hit_price,
-                "hit_time_tehran": hit_time_tehran,
-                "broker_fee": f"{broker_fee:.6f}",
-                "final_pnl_usd": f"{final_pnl_usd:.6f}",
-                "return_pct": f"{return_pct:.4f}"
-            })
-            updated_rows.append(row)
-
-        with open(path, mode="w", newline="", encoding="utf-8") as f:
-            writer = csv.DictWriter(f, fieldnames=CSV_HEADERS)
-            writer.writeheader()
-            writer.writerows(updated_rows)
-
-        print("="*80)
-        print(f"✅ وضعیت سیگنال‌های {date_str} آپدیت شد: {path}")
-        print("="*80)
-
-    # ────────────────────────────────────────────────
-    # پاکسازی فایل‌های قدیمی‌تر از ۱۰ روز - با روش daily_csv_path
-    now_tehran = tehran_now()
-    threshold_date = now_tehran - timedelta(days=10)
-    threshold_str = threshold_date.strftime("%Y-%m-%d")
-
-    print("\n🗑️ پاکسازی فایل‌های قدیمی‌تر از {threshold_str} ...")
-
-    deleted_count = 0
-    kept_count = 0
-    invalid_count = 0
-
-    if not os.path.isdir(SIGNALS_DIR):
-        print(f"   پوشه {SIGNALS_DIR} وجود ندارد → هیچ فایلی برای حذف نیست")
-        return
-
-    for filename in os.listdir(SIGNALS_DIR):
-        if not filename.lower().endswith(".csv"):
+    updated = []
+    for row in rows:
+        status = (row.get("status") or "").strip()
+        if status != "OPEN":
+            updated.append(row)
             continue
 
-        full_path = os.path.join(SIGNALS_DIR, filename)
+        issued = parse_tehran_time(row.get("issued_at_tehran", ""))
+        symbol = row.get("symbol", "")
+        direction = row.get("direction", "LONG")
+        entry = _f(row.get("entry_price"))
+        sl = _f(row.get("stop_loss"))
+        tp = _f(row.get("take_profit"))
+        pos = _f(row.get("position_size_usd"), POSITION_SIZE_USD)
 
-        try:
-            date_part = filename[:-4].strip()
-            file_date = datetime.strptime(date_part, "%Y-%m-%d").date()
+        if not issued or not symbol or entry <= 0:
+            updated.append(row)
+            continue
 
-            if file_date < threshold_date.date():
-                os.remove(full_path)
-                print(f"   حذف شد → {filename} ({file_date})")
-                deleted_count += 1
+        age_days = (now_tehran - issued).total_seconds() / 86400.0
+        start_unix = int(issued.timestamp())
+        end_unix = int(now_tehran.timestamp())
+        candles = fetch_kucoin_1m(symbol, start_unix, end_unix)
+        time.sleep(0.25)
+
+        hit_status = None
+        hit_time = ""
+        hit_price = None
+
+        for c in candles:
+            t = datetime.fromtimestamp(c["t"], tz=ZoneInfo("Asia/Tehran"))
+            if t < issued:
+                continue
+            if direction == "LONG":
+                if c["l"] <= sl:
+                    hit_status, hit_price, hit_time = "STOP_HIT", sl, t.strftime("%Y-%m-%d %H:%M:%S")
+                    break
+                if c["h"] >= tp:
+                    hit_status, hit_price, hit_time = "TP_HIT", tp, t.strftime("%Y-%m-%d %H:%M:%S")
+                    break
             else:
-                print(f"   نگه داشته شد → {filename} ({file_date})")
-                kept_count += 1
+                if c["h"] >= sl:
+                    hit_status, hit_price, hit_time = "STOP_HIT", sl, t.strftime("%Y-%m-%d %H:%M:%S")
+                    break
+                if c["l"] <= tp:
+                    hit_status, hit_price, hit_time = "TP_HIT", tp, t.strftime("%Y-%m-%d %H:%M:%S")
+                    break
 
+        if hit_status is None and age_days > MAX_OPEN_DAYS:
+            exit_price = candles[-1]["c"] if candles else entry
+            hit_status = "CLOSED_MANUAL"
+            hit_price = exit_price
+            hit_time = now_tehran.strftime("%Y-%m-%d %H:%M:%S")
+
+        if hit_status:
+            net, ret_pct, fee = compute_pnl_usd(direction, entry, float(hit_price), pos)
+            row["status"] = hit_status
+            row["hit_time_tehran"] = hit_time
+            row["hit_price"] = f"{float(hit_price):.8f}"
+            row["broker_fee"] = f"{fee:.6f}"
+            row["final_pnl_usd"] = f"{net:.6f}"
+            row["return_pct"] = f"{ret_pct:.4f}"
+            print(f"  {symbol} {direction} -> {hit_status} | PnL={net:+.4f}")
+
+        updated.append(row)
+
+    write_csv_rows(date_str, fieldnames, updated)
+    return updated
+
+
+def scenario_key_from_row(row):
+    sid = (row.get("scenario_id") or "").strip()
+    if sid in SCENARIOS:
+        return sid
+    name = (row.get("scenario_name") or "").strip()
+    for k, sc in SCENARIOS.items():
+        label = f"{sc['name_fa']} ({sc['name_en']})"
+        if name == label or sc["name_fa"] in name:
+            return k
+    return "UNKNOWN"
+
+
+def collect_rows_for_report(date_list):
+    all_rows = []
+    for d in date_list:
+        rows, _ = read_csv_rows(d)
+        for r in rows:
+            r["_file_date"] = d
+            all_rows.append(r)
+    return all_rows
+
+
+def fmt_signal_line(r):
+    sym = r.get("symbol", "")
+    direction = r.get("direction", "")
+    entry = r.get("entry_price", "")
+    status = r.get("status", "")
+    pnl = r.get("final_pnl_usd") or "0"
+    ret = r.get("return_pct") or "0"
+    issued = (r.get("issued_at_tehran") or "")[:16]
+    try:
+        pnl_s = f"{float(pnl):+.4f}$"
+    except Exception:
+        pnl_s = f"{pnl}$"
+    try:
+        ret_s = f"{float(ret):+.3f}%"
+    except Exception:
+        ret_s = f"{ret}%"
+    try:
+        entry_s = f"{float(entry):.4f}"
+    except Exception:
+        entry_s = str(entry)
+    return f"• {sym} {direction} @ {entry_s} → {status} | PnL {pnl_s} | بازده {ret_s} | {issued}"
+
+
+def build_six_messages(report_date: str, rows):
+    today_rows = [r for r in rows if r.get("_file_date") == report_date]
+
+    def stats(rs):
+        tp = sum(1 for r in rs if r.get("status") == "TP_HIT")
+        sl = sum(1 for r in rs if r.get("status") == "STOP_HIT")
+        man = sum(1 for r in rs if r.get("status") == "CLOSED_MANUAL")
+        op = sum(1 for r in rs if r.get("status") == "OPEN")
+        closed = tp + sl
+        wr = (100.0 * tp / closed) if closed else 0.0
+        pnl = sum(_f(r.get("final_pnl_usd")) for r in rs if r.get("status") in ("TP_HIT", "STOP_HIT", "CLOSED_MANUAL"))
+        return tp, sl, man, op, wr, pnl
+
+    tp, sl, man, op, wr, pnl = stats(today_rows)
+    msgs = []
+
+    msg1 = (
+        f"🌙 گزارش شبانه PentaSignal\n"
+        f"📅 {report_date}\n\n"
+        f"── خلاصه روز ──\n"
+        f"سیگنال ثبت‌شده امروز: {len(today_rows)}\n"
+        f"TP: {tp}\n"
+        f"SL: {sl}\n"
+        f"CLOSED_MANUAL: {man}\n"
+        f"باز مانده: {op}\n"
+        f"وین‌ریت : {wr:.1f}%\n"
+        f"PnL تقریبی: {pnl:+.2f} USD\n"
+        f"(فرض: پوزیشن 10$ | کارمزد 0.2%)\n"
+    )
+    if len(today_rows) == 0:
+        msg1 += "\nامروز سیگنال جدیدی ثبت نشده است.\n"
+    msgs.append(msg1)
+
+    by_sc = defaultdict(list)
+    for r in rows:
+        by_sc[scenario_key_from_row(r)].append(r)
+
+    for sid in ACTIVE_SCENARIOS:
+        sc = SCENARIOS[sid]
+        title = f"{sc['name_fa']} ({sc['name_en']})"
+        personality = sc.get("personality", "")
+        sc_rows_today = [r for r in by_sc.get(sid, []) if r.get("_file_date") == report_date]
+        sc_rows_all = by_sc.get(sid, [])
+        older_closed = [
+            r for r in sc_rows_all
+            if r.get("_file_date") != report_date and r.get("status") in ("TP_HIT", "STOP_HIT", "CLOSED_MANUAL")
+        ]
+        tp, sl, man, op, wr, pnl = stats(sc_rows_today)
+        body = (
+            f"🏆 سناریو {title}\n"
+            f"🎭 {personality}\n\n"
+            f"سیگنال امروز: {len(sc_rows_today)}\n"
+            f"TP: {tp}\n"
+            f"SL: {sl}\n"
+            f"CLOSED_MANUAL: {man}\n"
+            f"باز مانده: {op}\n"
+            f"وین‌ریت : {wr:.1f}%\n"
+            f"PnL تقریبی: {pnl:+.4f} USD\n"
+        )
+        if not sc_rows_today and not older_closed:
+            body += "\nامروز و در پیگیری ۲ روزه موردی نبود.\n"
+        else:
+            body += "\nسیگنال‌ها:\n"
+            for r in sorted(sc_rows_today, key=lambda x: x.get("issued_at_tehran") or ""):
+                body += fmt_signal_line(r) + "\n"
+            if older_closed:
+                body += "\n── تعیین‌تکلیف از روزهای قبل ──\n"
+                for r in sorted(older_closed, key=lambda x: x.get("issued_at_tehran") or ""):
+                    body += fmt_signal_line(r) + "\n"
+        msgs.append(body)
+
+    return msgs
+
+
+def cleanup_old_files(keep_days=10):
+    if not os.path.isdir(SIGNALS_DIR):
+        return 0
+    now = tehran_now().date()
+    deleted = 0
+    for name in os.listdir(SIGNALS_DIR):
+        if not name.endswith(".csv"):
+            continue
+        try:
+            file_date = datetime.strptime(name.replace(".csv", ""), "%Y-%m-%d").date()
         except ValueError:
-            print(f"   رد شد (نام فایل نامعتبر) → {filename}")
-            invalid_count += 1
-        except PermissionError:
-            print(f"   خطای مجوز حذف → {filename}")
-            invalid_count += 1
-        except Exception as e:
-            print(f"   خطا در پردازش {filename}: {e}")
-            invalid_count += 1
+            continue
+        if (now - file_date).days > keep_days:
+            try:
+                os.remove(os.path.join(SIGNALS_DIR, name))
+                deleted += 1
+                print(f"deleted old: {name}")
+            except Exception as e:
+                print(f"delete error {name}: {e}")
+    return deleted
 
-    print(f"\nنتیجه پاکسازی:")
-    print(f"   حذف شده: {deleted_count} فایل")
-    print(f"   نگه داشته شده: {kept_count} فایل")
-    print(f"   نامعتبر / خطادار: {invalid_count} فایل")
-    print("="*80)
 
-    # ────────────────────────────────────────────────
-    # تولید گزارش روزانه و ارسال به تلگرام
-    report = generate_daily_report(date_str)
-    print(report)  # نمایش در کنسول
-    import asyncio  # برای اجرای async
-    asyncio.run(send_to_telegram(report))  # ارسال به تلگرام
+def main():
+    now = tehran_now()
+    report_date = (now - timedelta(days=1)).strftime("%Y-%m-%d")
+    d0 = report_date
+    d1 = (now - timedelta(days=2)).strftime("%Y-%m-%d")
+    d2 = (now - timedelta(days=3)).strftime("%Y-%m-%d")
+    date_list = [d2, d1, d0]
 
-    # ────────────────────────────────────────────────
-    # خودکار commit و push تغییرات به GitHub (برای Actions)
-    if deleted_count > 0:
-        print("\n📤 تلاش برای commit و push حذف‌ها به GitHub...")
-        try:
-            # تنظیم user برای git
-            subprocess.run(["git", "config", "--global", "user.name", "GitHub Action"], check=True)
-            subprocess.run(["git", "config", "--global", "user.email", "action@github.com"], check=True)
+    print("=" * 60)
+    print(f"Nightly monitor — report_date={report_date}")
+    print(f"Scanning: {date_list}")
+    print("=" * 60)
 
-            # stage تغییرات (حذف‌ها)
-            subprocess.run(["git", "add", "-u", SIGNALS_DIR], check=True)
+    for d in date_list:
+        print(f"\n--- update {d} ---")
+        update_open_rows_for_date(d, now)
 
-            # commit اگر تغییری بود
-            commit_output = subprocess.run(["git", "commit", "-m", f"حذف خودکار {deleted_count} فایل قدیمی signals"], capture_output=True, text=True)
-            if "nothing to commit" in commit_output.stdout or commit_output.returncode != 0:
-                print("⚠️ هیچ تغییری برای commit نبود یا خطا رخ داد")
-            else:
-                # push به origin (در Actions، GITHUB_TOKEN مدیریت می‌کند)
-                subprocess.run(["git", "push", "origin", "HEAD"], check=True)
-                print("✅ تغییرات با موفقیت push شد به GitHub")
+    rows = collect_rows_for_report(date_list)
+    messages = build_six_messages(report_date, rows)
 
-        except subprocess.CalledProcessError as e:
-            print(f"❌ خطا در git command: {e.stderr}")
-        except Exception as e:
-            print(f"❌ خطای کلی در git push: {e}")
+    async def send_all():
+        for i, msg in enumerate(messages, 1):
+            print(f"\n===== MSG {i}/{len(messages)} =====")
+            print(msg[:800])
+            await send_to_telegram(msg)
+            await asyncio.sleep(0.5)
+
+    asyncio.run(send_all())
+    cleanup_old_files(10)
+    print("\nDone.")
+
 
 if __name__ == "__main__":
-    now_tehran = tehran_now()
-    target_date = (now_tehran - timedelta(days=1)).strftime("%Y-%m-%d")
-    update_csv_rows(target_date)
+    main()
