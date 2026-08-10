@@ -142,7 +142,7 @@ async def process_symbol(symbol, data, idx, total):
         if direction_only and direction != direction_only:
             continue
 
-        prefer_risk = scenario.get("risk_level", "LOW")
+        prefer_risk = "LOW" if scenario.get("rule_profile", "strict") == "strict" else "MEDIUM"
 
         try:
             signal = await generate_signal(
