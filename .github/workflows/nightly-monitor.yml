@@ -41,8 +41,9 @@ jobs:
           commit_message: |
             Nightly monitor:
             - Updated CSV statuses
-            - Removed old signal files older than 10 days
-          file_pattern: signals/*.csv
+            - OHLCV parquet refresh (90d rolling)
+            - Removed signal files older than 90 days
+          file_pattern: "signals/*.csv data/ohlcv/*.parquet"
           skip_dirty_check: false
           skip_fetch: false
           push_options: '--force-with-lease'
