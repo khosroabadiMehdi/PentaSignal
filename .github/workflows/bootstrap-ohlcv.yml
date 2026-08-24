@@ -1,0 +1,31 @@
+name: Bootstrap OHLCV (one-time)
+
+on:
+  workflow_dispatch:
+
+jobs:
+  bootstrap:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install deps
+        run: |
+          pip install -r requirements.txt
+
+      - name: Download 90d OHLCV
+        run: python bootstrap_ohlcv.py
+
+      - name: Commit parquet data
+        uses: stefanzweifel/git-auto-commit-action@v5
+        with:
+          commit_message: "Bootstrap: 90d OHLCV parquet for backtest"
+          file_pattern: "data/ohlcv/*.parquet"
