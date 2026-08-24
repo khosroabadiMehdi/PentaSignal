@@ -50,4 +50,3 @@ def double_top_bottom(prices, lookback=10, tolerance=0.003):
     if abs(low_points[0] - low_points[1]) / low_points[0] <= tolerance:
         return "DoubleBottom"
     return None
-    
