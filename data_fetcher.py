@@ -42,3 +42,4 @@ def fetch_all_timeframes(symbol):
         if candles and len(candles) >= 50:
             data[tf] = candles
     return data
+    
