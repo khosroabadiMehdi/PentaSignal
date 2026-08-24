@@ -399,7 +399,20 @@ def main():
             await asyncio.sleep(0.5)
 
     asyncio.run(send_all())
-    cleanup_old_files(10)
+
+    # نگهداری لاگ سیگنال: ۳ ماه غلتان
+    deleted_signals = cleanup_old_files(90)
+    print(f"signals cleanup: deleted {deleted_signals} files older than 90 days")
+
+    # آپدیت فشرده OHLCV برای بک‌تست (Parquet) + trim ۹۰ روز
+    try:
+        from ohlcv_store import update_all_symbols
+        print("\n--- OHLCV nightly update ---")
+        ohlcv_summary = update_all_symbols()
+        print(f"OHLCV summary: {ohlcv_summary}")
+    except Exception as e:
+        print(f"OHLCV update skipped/error: {e}")
+
     print("\nDone.")
 
 
