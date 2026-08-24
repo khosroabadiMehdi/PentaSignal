@@ -20,6 +20,7 @@ from indicators import (
 )
 from patterns import ema_rejection, resistance_test, pullback, double_top_bottom
 from signal_store import append_signal_row, tehran_time_str
+from f6_filter import is_f6_blocked
 
 logger = logging.getLogger(__name__)
 
@@ -507,6 +508,16 @@ async def generate_signal(
                 f"Senario {scenario_id} | {symbol}: cooldown - {remaining/3600:.1f}s baghi mandeh"
             )
             return None
+
+    # ===== F6: قفل جهت بعد از ۲ استاپ هم‌جهت در همان روز =====
+    # جلوی کلاستر ضرر (مثل روز ۲۲) را می‌گیرد؛ در بک‌تست WR≈۷۶٪ با حفظ رشد
+    f6_blocked, f6_sl = is_f6_blocked(direction)
+    if f6_blocked:
+        logger.info(
+            f"F6 block | {symbol} {direction}: {f6_sl} STOP_HIT هم‌جهت امروز "
+            f"(سقف={2}) — سیگنال جدید در این جهت صادر نمی‌شود"
+        )
+        return None
 
     # ===== MOHASEBEH ADX =====
     adx, _, _ = calculate_adx(candles)
