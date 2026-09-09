@@ -1,0 +1,314 @@
+# engine.py — هسته اجرایی: هر بسته‌شدن کندل 30m یک تیک
+#
+#  • تعیین تکلیف سیگنال‌های باز: در هر تیک (شبانه‌روز)
+#  • صدور سیگنال جدید: فقط 07:00 ≤ ساعت تهران < 20:00
+#  • 24:00 (00:00 تهران): گزارش کامل شبانه + نگهداری CSV 90 روزه
+#
+#  همه منطق «قطعی و بدون آینده‌نگری» است تا شبیه‌ساز و ربات زنده یک رفتار داشته باشند.
+
+import logging
+from dataclasses import dataclass, field
+from datetime import datetime, timedelta
+
+from . import settings, store, scenarios, state
+from .exit_engine import (resolve, pnl_usd, be_price_for,
+                          STATUS_TP, STATUS_SL, STATUS_BE, STATUS_CM, STATUS_OPEN)
+from . import messages as msg
+from .utils import ts_to_tehran, tehran_str, tehran_date, parse_tehran, fmt_price
+
+logger = logging.getLogger("ps.engine")
+
+
+@dataclass
+class MsgLog:
+    ts: str                 # تهران
+    kind: str               # SIGNAL / BE_ARMED / SETTLE / REPORT
+    text: str
+    reply_to: str = ""
+    message_id: str = ""
+    signal_id: str = ""
+    meta: dict = field(default_factory=dict)
+
+
+class Engine:
+    def __init__(self, sender=None, entry_price_provider=None, light=False):
+        # sender(text, reply_to) → object with .message_id؛ None = حالت شبیه‌سازی بی‌صدا
+        # light=True → آپدیت‌های صرفاً اطلاعاتی CSV (last_check_ts) انجام نمی‌شود (شبیه‌سازی بلند)
+        self.sender = sender
+        self.entry_price_provider = entry_price_provider
+        self.light = light
+        self._auto_id = 500_000
+
+    # ---------- ارسال ----------
+    def _send(self, log: MsgLog):
+        if self.sender is not None:
+            res = self.sender(log.text, int(log.reply_to) if log.reply_to else None)
+            log.message_id = str(getattr(res, "message_id", "") or "")
+        else:
+            self._auto_id += 1
+            log.message_id = str(self._auto_id)
+        return log
+
+    # ---------- ابزار ----------
+    @staticmethod
+    def _candle_index_at(candles, close_ts: int, bar_seconds: int = 1800):
+        """اندیس آخرین کندل کاملاً بسته‌شده تا close_ts."""
+        want = close_ts - bar_seconds
+        for i in range(len(candles) - 1, -1, -1):
+            if candles[i]["t"] == want:
+                return i
+            if candles[i]["t"] < want:
+                return i
+        return -1
+
+    @staticmethod
+    def _entry_row(sig, entry: float, close_dt: datetime, entry_candle_ts: int):
+        """ساخت ردیف CSV برای سیگنال جدید — SL/TP نسبت به ورود واقعی بازمحاسبه می‌شود."""
+        sc = scenarios.SCENARIOS[sig["scenario_id"]]
+        atr_val = sig["atr"]
+        long = sig["direction"] == "LONG"
+        sl = entry - sc["sl_atr"] * atr_val if long else entry + sc["sl_atr"] * atr_val
+        tp = ""
+        exit_param = ""
+        if sc["exit_mode"] == "FIXED":
+            tp = entry - sc["tp_atr"] * atr_val if long else entry + sc["tp_atr"] * atr_val
+            tp = f"{tp:.10f}"
+        elif sc["exit_mode"] == "TRAIL":
+            exit_param = sc["trail_atr"]
+        elif sc["exit_mode"] == "BK":
+            exit_param = f"arm={sc['bk_arm_r']}"
+        risk_pct = abs(entry - sl) / entry * 100.0
+        sid = sig["scenario_id"]
+        sym = sig["symbol"]
+        return {
+            "signal_id": f"{sid}-{sym}-{close_dt.strftime('%Y%m%d-%H%M')}",
+            "issued_at_tehran": tehran_str(close_dt),
+            "candle_close_tehran": tehran_str(close_dt),
+            "symbol": sym,
+            "direction": sig["direction"],
+            "scenario_id": sid,
+            "entry_price": f"{entry:.10f}",
+            "stop_loss": f"{sl:.10f}",
+            "take_profit": tp,
+            "exit_mode": sc["exit_mode"],
+            "exit_param": exit_param,
+            "sl_atr_mult": sc["sl_atr"],
+            "cm_candles": sc["cm_candles"],
+            "atr": f"{atr_val:.10f}",
+            "position_size_usd": f"{settings.POSITION_SIZE_USD:.2f}",
+            "risk_pct": f"{risk_pct:.4f}",
+            "status": STATUS_OPEN,
+            "entry_candle_ts": entry_candle_ts,
+            "be_armed": "0",
+            "be_price": "",
+            "last_check_ts": "",
+            "notes": "",
+        }
+
+    # ---------- صدور سیگنال جدید ----------
+    def detect_new(self, close_dt: datetime, ctx: scenarios.MarketContext) -> list:
+        """اسکن همه نمادها روی آخرین کندل بسته‌شده؛ خروجی لیست MsgLog سیگنال."""
+        logs = []
+        close_ts = int(close_dt.timestamp())
+        for symbol in scenarios.UNION_SYMBOLS:
+            candles = ctx.candles30.get(symbol) or []
+            i = self._candle_index_at(candles, close_ts, 1800)
+            if i < 60:
+                continue
+            for sig in scenarios.run_detectors(candles, i, ctx, symbol):
+                sc = scenarios.SCENARIOS[sig["scenario_id"]]
+                # dedupe: یک پوزیشن باز برای (نماد، سناریو)
+                if store.has_open(symbol, sig["scenario_id"]):
+                    continue
+                # کول‌داون
+                last_t = store.last_signal_time(symbol, sig["scenario_id"])
+                if last_t and (close_dt - last_t).total_seconds() < sc["cooldown_h"] * 3600:
+                    continue
+                # قیمت ورود واقعی (زنده: تیکر | شبیه‌سازی: باز کندل بعد)
+                if self.entry_price_provider:
+                    entry = self.entry_price_provider(symbol, close_ts)
+                else:
+                    entry = float(sig["entry_hint"])
+                if not entry or entry <= 0:
+                    continue
+                row = self._entry_row(sig, entry, close_dt, entry_candle_ts=close_ts)
+                store.append_signal(row)
+                store.append_event(row["issued_at_tehran"], row["signal_id"],
+                                   "SIGNAL", f"entry={entry:.10f}")
+                sig2 = dict(sig)
+                sig2.update({
+                    "entry_price": row["entry_price"], "stop_loss": row["stop_loss"],
+                    "take_profit": row["take_profit"], "exit_mode": row["exit_mode"],
+                    "exit_param": row["exit_param"], "candle_close_tehran": row["candle_close_tehran"],
+                })
+                log = MsgLog(ts=row["issued_at_tehran"], kind="SIGNAL",
+                             text=msg.format_signal(sig2), signal_id=row["signal_id"],
+                             meta={"symbol": symbol, "scenario_id": sig["scenario_id"],
+                                   "direction": sig["direction"]})
+                self._send(log)
+                store.update_signal(row["signal_id"],
+                                    telegram_message_id=log.message_id)
+                logs.append(log)
+        return logs
+
+    # ---------- تعیین تکلیف ----------
+    def settle_all(self, close_dt: datetime, ctx: scenarios.MarketContext) -> list:
+        """بررسی همه سیگنال‌های باز با کندل‌های تازه (بدون آینده‌نگری)."""
+        logs = []
+        close_ts = int(close_dt.timestamp())
+        for row in store.open_signals():
+            symbol = row["symbol"]
+            # خروج زنده با وضوح 1m؛ داده در data/ohlcv همزمان آرشیو می‌شود.
+            candles = ctx.candles1m.get(symbol) or ctx.candles30.get(symbol) or []
+            bar_minutes = 1 if ctx.candles1m.get(symbol) else 30
+            if not candles:
+                continue
+            entry_candle_ts = int(row.get("entry_candle_ts") or 0) or \
+                (int(parse_tehran(row["issued_at_tehran"]).timestamp()))
+            # در داده 1m، از دقیقه صدور/ورود به بعد بررسی می‌کنیم؛ کندل باز هرگز در upto وارد نمی‌شود.
+            bar_seconds = 60 if bar_minutes == 1 else 1800
+            # اولین کندل بعد/در زمان ورود را پیدا کن؛ لازم نیست t دقیقاً برابر باشد.
+            entry_idx = next((j for j, c in enumerate(candles)
+                              if int(c["t"]) >= entry_candle_ts), None)
+            if entry_idx is None or entry_idx >= len(candles):
+                continue
+            # فقط کندل‌هایی که تا close_ts کاملاً بسته شده‌اند.
+            upto = self._candle_index_at(candles, close_ts, bar_seconds)
+            if upto is None or upto < entry_idx:
+                continue
+
+            sc = scenarios.SCENARIOS.get(row["scenario_id"])
+            if not sc:
+                continue
+            exit_mode = row["exit_mode"]
+            trail_atr = sc.get("trail_atr") if exit_mode == "TRAIL" else None
+            bk_arm = sc.get("bk_arm_r", 1.0) if exit_mode == "BK" else 1.0
+            tp = float(row["take_profit"]) if row.get("take_profit") else None
+            entry = float(row["entry_price"])
+            sl = float(row["stop_loss"])
+            atr_entry = float(row["atr"])
+            direction = row["direction"]
+
+            res = resolve(entry_idx, entry, direction, sl, tp, exit_mode,
+                          trail_atr, atr_entry, candles[:upto + 1],
+                          cm_candles=(int(row["cm_candles"]) * 30 if bar_minutes == 1 else int(row["cm_candles"])),
+                          bk_arm_r=bk_arm)
+
+            be_armed = row.get("be_armed") == "1"
+            new_events = []
+            if exit_mode == "BK" and not be_armed:
+                for ev in res.events:
+                    if ev["event"] == "BE_ARMED":
+                        be_px = be_price_for(entry, direction)
+                        row["be_armed"] = "1"
+                        row["be_price"] = f"{be_px:.10f}"
+                        store.update_signal(row["signal_id"], be_armed="1",
+                                            be_price=f"{be_px:.10f}")
+                        store.append_event(tehran_str(ts_to_tehran(ev["ts"])),
+                                           row["signal_id"], "BE_ARMED", f"{be_px:.10f}")
+                        sig2 = self._row_to_sig(row)
+                        sig2["be_price"] = be_px
+                        sig2["bk_arm_r"] = bk_arm
+                        log = MsgLog(ts=tehran_str(ts_to_tehran(ev["ts"])), kind="BE_ARMED",
+                                     text=msg.format_be_armed(sig2),
+                                     reply_to=row.get("telegram_message_id", ""),
+                                     signal_id=row["signal_id"])
+                        self._send(log)
+                        store.update_signal(row["signal_id"],
+                                            settle_message_id=log.message_id)
+                        logs.append(log)
+                        new_events.append(ev)
+
+            if res.status != STATUS_OPEN:
+                exit_px = res.exit_price
+                pos = float(row.get("position_size_usd") or settings.POSITION_SIZE_USD)
+                net, ret_pct, fee = pnl_usd(direction, entry, exit_px, pos)
+                held_minutes = res.candles_held * bar_minutes
+                exit_dt = ts_to_tehran(res.exit_candle_ts + 1800)
+                reason = {STATUS_TP: "TP", STATUS_SL: "SL",
+                          STATUS_BE: "BE", STATUS_CM: "CM"}[res.status]
+                store.update_signal(
+                    row["signal_id"], status=res.status,
+                    exit_price=f"{exit_px:.10f}",
+                    exit_time_tehran=tehran_str(exit_dt),
+                    exit_reason=reason,
+                    pnl_usd=f"{net:.6f}", return_pct=f"{ret_pct:.4f}",
+                    fee_usd=f"{fee:.6f}", r_multiple=f"{res.r_multiple:.4f}",
+                    last_check_ts=str(candles[upto]["t"]),
+                )
+                store.append_event(tehran_str(exit_dt), row["signal_id"],
+                                   f"SETTLE_{reason}",
+                                   f"exit={exit_px:.10f};pnl={net:.6f}")
+                sig2 = self._row_to_sig(row)
+                log = MsgLog(ts=tehran_str(exit_dt), kind="SETTLE",
+                             text=msg.format_settle(sig2, res.status, exit_px,
+                                                    net, ret_pct, held_minutes),
+                             reply_to=row.get("telegram_message_id", ""),
+                             signal_id=row["signal_id"],
+                             meta={"status": res.status, "pnl_usd": net})
+                self._send(log)
+                store.update_signal(row["signal_id"],
+                                    settle_message_id=log.message_id)
+                logs.append(log)
+            else:
+                if not self.light:
+                    store.update_signal(row["signal_id"],
+                                        last_check_ts=str(candles[upto]["t"]))
+        return logs
+
+    @staticmethod
+    def _row_to_sig(row) -> dict:
+        return {
+            "signal_id": row["signal_id"],
+            "symbol": row["symbol"],
+            "direction": row["direction"],
+            "scenario_id": row["scenario_id"],
+            "entry_price": row["entry_price"],
+            "stop_loss": row["stop_loss"],
+            "take_profit": row.get("take_profit") or "",
+            "exit_mode": row["exit_mode"],
+            "exit_param": row.get("exit_param"),
+            "candle_close_tehran": row.get("candle_close_tehran") or row["issued_at_tehran"],
+        }
+
+    # ---------- گزارش شبانه ----------
+    def nightly(self, close_dt: datetime) -> MsgLog:
+        """اجرای 24:00: گزارش کامل روز گذشته + نگهداری CSV
+
+        ضدتکرار: کلید last_nightly_date در state.json — هر تاریخ فقط یک‌بار
+        گزارش می‌فرستد (محافظت در برابر اجرای هم‌زمان/تکراری Actions)."""
+        from . import report as rpt
+        report_date = tehran_date(close_dt - timedelta(days=1))
+        if state.get("last_nightly_date") == report_date:
+            logger.info("nightly report %s already sent — skip", report_date)
+            return None
+        text = rpt.build_report_message(report_date)
+        log = MsgLog(ts=tehran_str(close_dt), kind="REPORT", text=text)
+        self._send(log)
+        # کلید را بلافاصله بعد از ارسال موفق ثبت کن؛ خطای احتمالی save/rotate
+        # در تیک بعدی جبران می‌شود ولی پیام تکراری تولید نمی‌شود
+        state.set_key("last_nightly_date", report_date)
+        path = rpt.save_report_json(report_date)
+        moved = store.rotate_90d()
+        logger.info("nightly report %s → %s | archive moved: %s",
+                    report_date, path, moved)
+        return log
+
+    # ---------- تیک کامل ----------
+    def on_candle_close(self, close_dt: datetime, ctx: scenarios.MarketContext,
+                        allow_new: bool | None = None, run_nightly: bool = False) -> list:
+        """یک تیک کامل: اول تعیین تکلیف، بعد (در پنجره مجاز) صدور سیگنال؛ گزارش شبانه فقط در تیک اختصاصی اجرا می‌شود"""
+        logs = []
+        # 1) تعیین تکلیف — همیشه
+        logs += self.settle_all(close_dt, ctx)
+        # 2) صدور سیگنال جدید — فقط پنجره 07:00 تا 20:00
+        if allow_new is None:
+            allow_new = settings.NEW_SIGNAL_START_HOUR <= close_dt.hour < settings.NEW_SIGNAL_END_HOUR
+        if allow_new:
+            logs += self.detect_new(close_dt, ctx)
+        # 3) گزارش شبانه فقط در تیک اختصاصی ساعت 02:00 تهران اجرا می‌شود.
+        if run_nightly:
+            rpt_log = self.nightly(close_dt)
+            if rpt_log is not None:
+                logs.append(rpt_log)
+        return logs

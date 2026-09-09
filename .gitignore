@@ -1,0 +1,39 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+
+# رازها
+.env
+
+# داده‌های زمان‌اجرا — کش/لاگ نادیده، ولی CSV/استیت/گزارش‌ها کامیت می‌شوند
+# تا وضعیت ربات بین اجراهای GitHub Actions مانا باشد
+data/*
+!data/.gitkeep
+!data/signals.csv
+!data/events.csv
+!data/state.json
+!data/reports/
+!data/archive/
+!data/ohlcv/
+!data/ohlcv/**
+data_sim/
+data_sim_month/
+data_review/
+*.log
+
+# خروجی‌های محلی شبیه‌سازی (نسخه رسمی در results/ است)
+sim_result.json
+month_result.json
+tests/last_run_*.json
+
+# سیستم‌عامل/ادیتور
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
+
+# QA محلی
+qa_*.png

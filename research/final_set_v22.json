@@ -1,0 +1,71 @@
+{
+ "F1": {
+  "det": {
+   "donchian": 32,
+   "min_atr_pct": 0.0015,
+   "buf_atr": 0.0,
+   "sl_atr": 4.0
+  },
+  "exit": {
+   "mode": "BK",
+   "bk_arm": 1.0,
+   "cm": 288
+  },
+  "cool": 6
+ },
+ "F2": {
+  "det": {
+   "dd_gate": 0.08,
+   "break_lookback": 8,
+   "sl_atr": 3.5
+  },
+  "exit": {
+   "mode": "BK",
+   "bk_arm": 1.5,
+   "cm": 432
+  },
+  "cool": 24
+ },
+ "F3": {
+  "det": {
+   "_mode": "pullback",
+   "side": "long",
+   "slope_min": 0.012,
+   "sl_atr": 2.5
+  },
+  "exit": {
+   "mode": "TRAIL",
+   "trail_atr": 5.0,
+   "cm": 432
+  },
+  "cool": 24
+ },
+ "F4": {
+  "det": {
+   "_mode": "rebound",
+   "dd_gate": 0.035,
+   "coin_dd": 0.08,
+   "sl_atr": 2.5
+  },
+  "exit": {
+   "mode": "BK",
+   "bk_arm": 1.0,
+   "cm": 288
+  },
+  "cool": 8
+ },
+ "F5": {
+  "det": {
+   "vol_x": 1.5,
+   "range_x": 1.8,
+   "close_pos_max": 0.35,
+   "sl_atr": 2.5
+  },
+  "exit": {
+   "mode": "BK",
+   "bk_arm": 1.0,
+   "cm": 144
+  },
+  "cool": 24
+ }
+}

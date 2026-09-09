@@ -1,0 +1,39 @@
+name: "PentaSignal · Bootstrap 90d OHLCV"
+
+on:
+  workflow_dispatch:
+    inputs:
+      days:
+        description: "تعداد روز دیتای 1m"
+        required: true
+        default: "90"
+        type: string
+
+concurrency:
+  group: pentasignal-bootstrap
+  cancel-in-progress: false
+
+jobs:
+  bootstrap:
+    name: "دریافت اولیه دیتای 1m همه ارزها"
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+      - name: Bootstrap OHLCV
+        env:
+          DRY_RUN: "1"
+        run: python bootstrap_ohlcv.py --days "${{ inputs.days }}"
+      - name: Persist 90d OHLCV
+        uses: stefanzweifel/git-auto-commit-action@v5
+        with:
+          commit_message: "data: bootstrap 90d 1m OHLCV [skip ci]"
+          file_pattern: "data/ohlcv"
