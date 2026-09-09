@@ -1,10 +1,11 @@
-# PentaSignal v3 — سیگنال + تعیین تکلیف، هر ۳۰ دقیقه در پنجره 07:00–20:00 تهران
+# PentaSignal v3 — هر ۳۰ دقیقه از 07:00 تا 20:00 تهران
 name: "PentaSignal Bot · 30m Signal Window"
 
 on:
   schedule:
-    # 07:00..19:30 تهران = 03:30..16:00 UTC
-    - cron: "0,30 3-16 * * *"
+    # 07:00..20:00 تهران = 03:30..16:30 UTC (هر ۳۰ دقیقه)
+    - cron: "30 3-16 * * *"   # 03:30, 04:30, ... 16:30 UTC → 07:00..20:00 تهران
+    - cron: "0 4-16 * * *"    # 04:00, 05:00, ... 16:00 UTC → 07:30..19:30 تهران
   workflow_dispatch: {}
 
 concurrency:
@@ -35,7 +36,9 @@ jobs:
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
           DRY_RUN: "0"
-        run: python run_bot.py --once --signal
+        # بدون --signal اجباری: خود موتور ساعت تهران را رعایت می‌کند
+        # 07:00–19:30 → سیگنال+تسویه | 20:00 → فقط تسویه
+        run: python run_bot.py --once
       - name: Upload bot log
         if: always()
         uses: actions/upload-artifact@v4
@@ -49,4 +52,3 @@ jobs:
         with:
           commit_message: "bot: 30m signal tick + 1m market data [skip ci]"
           file_pattern: "data/"
-          

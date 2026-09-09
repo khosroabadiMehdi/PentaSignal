@@ -1,10 +1,11 @@
-# PentaSignal v3 — 20:00 تا 01:00 تهران فقط تعیین تکلیف
+# PentaSignal v3 — 20:30 تا 01:00 تهران فقط تعیین تکلیف
 name: "PentaSignal Bot · Night Settlement"
 
 on:
   schedule:
-    # 20:00..01:00 تهران = 16:30..21:30 UTC
-    - cron: "0,30 16-21 * * *"
+    # 20:30..01:00 تهران = 17:00..21:30 UTC
+    # 20:00 را signal-bot پوشش می‌دهد؛ از 20:30 فقط تسویه
+    - cron: "0,30 17-21 * * *"
   workflow_dispatch: {}
 
 concurrency:
@@ -49,4 +50,3 @@ jobs:
         with:
           commit_message: "bot: settlement tick + 1m market data [skip ci]"
           file_pattern: "data/"
-          
