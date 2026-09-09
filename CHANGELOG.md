@@ -1,3 +1,14 @@
+## 3.0.1 — cleaner Telegram messages
+
+- Redesigned all Telegram templates (signal / BE / settle).
+- Separators changed to dashed lines.
+- Hashtags reduced to `#SYMBOL` + `#scenario_name`.
+- Scenario shown as `F3 · پول‌بک در روند`.
+- Result messages use green/red markers based on PnL.
+- Project name + version footer on every message.
+- Fixed missing OHLCV settings (`OHLCV_RECENT_MINUTES`, `OHLCV_RETENTION_DAYS`, `OHLCV_BACKFILL_CHUNK_MINUTES`).
+- Made git-auto-commit workflows resilient when some data files are missing.
+
 ## 3.0.0 — operational hardening
 
 - Operational windows split into signal, night-settlement, and 02:00 nightly-report workflows (Tehran time).

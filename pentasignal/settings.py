@@ -3,7 +3,7 @@
 
 import os
 
-VERSION = "3.0.0"
+VERSION = "3.0.1"
 
 # ---------- مسیرها ----------
 BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))  # root پروژه
@@ -52,6 +52,11 @@ LOOKBACK_DAYS_4H = 35        # تاریخچه 4h برای گیت رژیم BTC
 
 # ---------- نگهداری CSV ----------
 CSV_KEEP_DAYS = 90           # فایل‌های سیگنال/رویداد 90 روزه غلتان می‌شوند
+
+# ---------- آرشیو OHLCV یک‌دقیقه‌ای ----------
+OHLCV_RECENT_MINUTES = 45          # در هر تیک زنده چند دقیقه اخیر را از API می‌گیریم
+OHLCV_RETENTION_DAYS = 90          # نگه‌داری غلتان آرشیو 1m
+OHLCV_BACKFILL_CHUNK_MINUTES = 720 # اندازه هر تکه در bootstrap (دقیقه)
 
 # ---------- اجرا ----------
 LOOP_TICK_SECONDS = 20       # هر 20 ثانیه بیدار شو؛ در بستن کندل 30m عمل کن

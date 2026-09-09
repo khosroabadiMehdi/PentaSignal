@@ -48,4 +48,5 @@ jobs:
         uses: stefanzweifel/git-auto-commit-action@v5
         with:
           commit_message: "bot: settlement tick + 1m market data [skip ci]"
-          file_pattern: "data/signals.csv data/events.csv data/state.json data/reports data/archive data/ohlcv"
+          file_pattern: "data/*"
+          disable_globbing: true

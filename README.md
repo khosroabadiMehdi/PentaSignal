@@ -2,7 +2,7 @@
 
 **ربات سیگنال تلگرام کریپتو — ۵ سناریوی داده‌محور روی کندل 30m KuCoin**
 
-![Version](https://img.shields.io/badge/version-3.0.0-2ea6ff)
+![Version](https://img.shields.io/badge/version-3.0.1-2ea6ff)
 ![Python](https://img.shields.io/badge/python-3.10%2B-4dd07a)
 ![Exchange](https://img.shields.io/badge/exchange-KuCoin%20public%20API-e8b34c)
 ![Tests](https://img.shields.io/badge/tests-59%2F59%20pass-4dd07a)
