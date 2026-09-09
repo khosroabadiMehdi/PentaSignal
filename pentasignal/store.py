@@ -1,9 +1,22 @@
-# store.py — ذخیره‌سازی CSV سیگنال‌ها/رویدادها + نگهداری غلتان 90 روزه
+# store.py — ذخیره‌سازی روزانه سیگنال‌ها (یکپارچه)
+#
+# ساختار:
+#   data/signals/YYYY-MM-DD.csv
+#
+# هر ردیف = یک سیگنال کامل از صدور تا نتیجه:
+#   ورود، حد ضرر، وضعیت، زمان/قیمت خروج، سود، کارمزد، BE، پیام تلگرام و ...
+#
+# بعد از نیمه‌شب:
+#   سیگنال OPEN در فایل روز صدور می‌ماند
+#   open_signals() فایل‌های اخیر را اسکن می‌کند
+#   update_signal() همان فایل روز صدور را آپدیت می‌کند
 
 import csv
 import os
+import re
 import threading
 from datetime import timedelta
+from glob import glob
 
 from . import settings
 from .utils import tehran_now, parse_tehran
@@ -14,36 +27,65 @@ SIGNAL_HEADERS = [
     "signal_id", "issued_at_tehran", "candle_close_tehran", "symbol", "direction",
     "scenario_id", "entry_price", "stop_loss", "take_profit", "exit_mode",
     "exit_param", "sl_atr_mult", "cm_candles", "atr", "entry_candle_ts", "position_size_usd",
-    "risk_pct", "status", "exit_price", "exit_time_tehran", "exit_reason",
+    "risk_pct", "reason", "status", "exit_price", "exit_time_tehran", "exit_reason",
     "pnl_usd", "return_pct", "fee_usd", "r_multiple", "be_armed", "be_price",
-    "telegram_message_id", "settle_message_id", "last_check_ts", "notes",
+    "be_armed_at_tehran", "telegram_message_id", "settle_message_id",
+    "last_check_ts", "notes",
 ]
 
-EVENT_HEADERS = [
-    "ts_tehran", "signal_id", "event", "detail", "message_id", "reply_to_message_id",
-]
+_DATE_RE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
+
+
+def _signals_dir() -> str:
+    d = settings.SIGNALS_DIR
+    os.makedirs(d, exist_ok=True)
+    return d
+
+
+def _date_from_ts(ts_tehran: str) -> str:
+    if not ts_tehran:
+        return tehran_now().strftime("%Y-%m-%d")
+    return ts_tehran[:10]
+
+
+def _signals_path(date_str: str) -> str:
+    return os.path.join(_signals_dir(), f"{date_str}.csv")
 
 
 def _ensure(path, headers):
     if not os.path.isfile(path):
+        os.makedirs(os.path.dirname(path), exist_ok=True)
         with open(path, "w", newline="", encoding="utf-8") as f:
             csv.writer(f).writerow(headers)
 
 
 def init():
-    _ensure(settings.SIGNALS_CSV, SIGNAL_HEADERS)
-    _ensure(settings.EVENTS_CSV, EVENT_HEADERS)
+    _signals_dir()
+    os.makedirs(settings.ARCHIVE_DIR, exist_ok=True)
+
+
+def _list_signal_files(max_days: int | None = None) -> list:
+    files = sorted(glob(os.path.join(_signals_dir(), "*.csv")), reverse=True)
+    out = []
+    for p in files:
+        name = os.path.basename(p)[:-4]
+        if not _DATE_RE.match(name):
+            continue
+        out.append(p)
+        if max_days is not None and len(out) >= max_days:
+            break
+    return out
 
 
 def read_all(path, headers):
-    init()
+    if not os.path.isfile(path):
+        return []
     with open(path, newline="", encoding="utf-8") as f:
-        reader = csv.DictReader(f)
-        rows = list(reader)
-    return rows
+        return list(csv.DictReader(f))
 
 
 def _write_all(path, headers, rows):
+    os.makedirs(os.path.dirname(path), exist_ok=True)
     with open(path, "w", newline="", encoding="utf-8") as f:
         w = csv.DictWriter(f, fieldnames=headers, extrasaction="ignore")
         w.writeheader()
@@ -52,55 +94,92 @@ def _write_all(path, headers, rows):
 
 
 def append_signal(row: dict) -> str:
-    init()
+    """صدور سیگنال جدید در فایل روز صدور."""
+    date_str = _date_from_ts(row.get("issued_at_tehran", ""))
+    path = _signals_path(date_str)
     with _lock:
-        with open(settings.SIGNALS_CSV, "a", newline="", encoding="utf-8") as f:
+        _ensure(path, SIGNAL_HEADERS)
+        with open(path, "a", newline="", encoding="utf-8") as f:
             w = csv.DictWriter(f, fieldnames=SIGNAL_HEADERS, extrasaction="ignore")
             w.writerow({h: row.get(h, "") for h in SIGNAL_HEADERS})
-    return settings.SIGNALS_CSV
+    return path
 
 
 def append_event(ts_tehran: str, signal_id: str, event: str, detail: str = "",
                  message_id: str = "", reply_to: str = ""):
-    init()
+    """
+    سازگاری با کد قدیمی — رویداد روی همان ردیف سیگنال ثبت می‌شود (notes).
+    دیگر فایل events جدا ساخته نمی‌شود.
+    """
+    note = f"{ts_tehran}|{event}|{detail}".strip("|")
     with _lock:
-        with open(settings.EVENTS_CSV, "a", newline="", encoding="utf-8") as f:
-            csv.writer(f).writerow([ts_tehran, signal_id, event, detail,
-                                    message_id, reply_to])
+        path, rows, idx = _find_signal_file(signal_id)
+        if path is None or rows is None or idx is None:
+            return
+        prev = (rows[idx].get("notes") or "").strip()
+        rows[idx]["notes"] = f"{prev} || {note}".strip(" |") if prev else note
+        if event == "BE_ARMED" and not rows[idx].get("be_armed_at_tehran"):
+            rows[idx]["be_armed_at_tehran"] = ts_tehran
+        _write_all(path, SIGNAL_HEADERS, rows)
+
+
+def _find_signal_file(signal_id: str):
+    m = re.search(r"(\d{8})-\d{4}$", signal_id or "")
+    candidates = []
+    if m:
+        d = m.group(1)
+        date_guess = f"{d[:4]}-{d[4:6]}-{d[6:8]}"
+        candidates.append(_signals_path(date_guess))
+    for p in _list_signal_files():
+        if p not in candidates:
+            candidates.append(p)
+    for path in candidates:
+        if not os.path.isfile(path):
+            continue
+        rows = read_all(path, SIGNAL_HEADERS)
+        for i, r in enumerate(rows):
+            if r.get("signal_id") == signal_id:
+                return path, rows, i
+    return None, None, None
 
 
 def update_signal(signal_id: str, **fields):
-    """به‌روزرسانی ردیف سیگنال (وضعیت، خروج، message_id و ...)"""
-    init()
+    """به‌روزرسانی نتیجه/وضعیت روی همان ردیف سیگنال (حتی بعد از نیمه‌شب)."""
     with _lock:
-        rows = read_all(settings.SIGNALS_CSV, SIGNAL_HEADERS)
-        for r in rows:
-            if r.get("signal_id") == signal_id:
-                for k, v in fields.items():
-                    r[k] = str(v)
-        _write_all(settings.SIGNALS_CSV, SIGNAL_HEADERS, rows)
+        path, rows, idx = _find_signal_file(signal_id)
+        if path is None or rows is None or idx is None:
+            return
+        for k, v in fields.items():
+            rows[idx][k] = str(v)
+        _write_all(path, SIGNAL_HEADERS, rows)
 
 
 def get_signal(signal_id: str):
-    for r in read_all(settings.SIGNALS_CSV, SIGNAL_HEADERS):
-        if r.get("signal_id") == signal_id:
-            return r
-    return None
+    path, rows, idx = _find_signal_file(signal_id)
+    if path is None or rows is None or idx is None:
+        return None
+    return rows[idx]
 
 
 def open_signals():
-    return [r for r in read_all(settings.SIGNALS_CSV, SIGNAL_HEADERS)
-            if (r.get("status") or "OPEN") == "OPEN"]
+    """سیگنال‌های OPEN از فایل‌های اخیر — بعد از نیمه‌شب گم نمی‌شوند."""
+    out = []
+    for path in _list_signal_files(max_days=settings.CSV_KEEP_DAYS):
+        for r in read_all(path, SIGNAL_HEADERS):
+            if (r.get("status") or "OPEN") == "OPEN":
+                out.append(r)
+    return out
 
 
 def all_signals():
-    return read_all(settings.SIGNALS_CSV, SIGNAL_HEADERS)
+    out = []
+    for path in _list_signal_files(max_days=settings.CSV_KEEP_DAYS):
+        out.extend(read_all(path, SIGNAL_HEADERS))
+    return out
 
 
 def signals_for_date(date_str: str):
-    """سیگنال‌های صادرشده در تاریخ تهران مشخص"""
-    return [r for r in all_signals()
-            if (r.get("issued_at_tehran") or "").startswith(date_str)]
+    return read_all(_signals_path(date_str), SIGNAL_HEADERS)
 
 
 def has_open(symbol: str, scenario_id: str) -> bool:
@@ -111,7 +190,6 @@ def has_open(symbol: str, scenario_id: str) -> bool:
 
 
 def last_signal_time(symbol: str, scenario_id: str):
-    """آخرین زمان صدور سیگنال (برای کول‌داون)"""
     best = None
     for r in all_signals():
         if r.get("symbol") == symbol and r.get("scenario_id") == scenario_id:
@@ -122,30 +200,23 @@ def last_signal_time(symbol: str, scenario_id: str):
 
 
 def rotate_90d(keep_days=None) -> dict:
-    """چرخش غلتان: ردیف‌های قدیمی‌تر از keep_days به آرشیو می‌روند."""
+    """فایل‌های روزانه قدیمی‌تر از keep_days را به archive/signals منتقل می‌کند."""
     keep_days = keep_days or settings.CSV_KEEP_DAYS
-    cutoff = tehran_now() - timedelta(days=keep_days)
-    moved = {"signals": 0, "events": 0}
+    cutoff = (tehran_now() - timedelta(days=keep_days)).strftime("%Y-%m-%d")
+    moved = {"signals": 0}
+
     with _lock:
-        for path, headers, key in (
-            (settings.SIGNALS_CSV, SIGNAL_HEADERS, "issued_at_tehran"),
-            (settings.EVENTS_CSV, EVENT_HEADERS, "ts_tehran"),
-        ):
-            if not os.path.isfile(path):
+        arch_dir = os.path.join(settings.ARCHIVE_DIR, "signals")
+        os.makedirs(arch_dir, exist_ok=True)
+        for path in glob(os.path.join(_signals_dir(), "*.csv")):
+            name = os.path.basename(path)[:-4]
+            if not _DATE_RE.match(name):
                 continue
-            rows = read_all(path, headers)
-            keep, old = [], []
-            for r in rows:
-                t = parse_tehran(r.get(key, ""))
-                (old if (t and t < cutoff) else keep).append(r)
-            if old:
-                arch = os.path.join(settings.ARCHIVE_DIR,
-                                    os.path.basename(path).replace(".csv", "_archive.csv"))
-                _ensure(arch, headers)
-                with open(arch, "a", newline="", encoding="utf-8") as f:
-                    w = csv.DictWriter(f, fieldnames=headers, extrasaction="ignore")
-                    for r in old:
-                        w.writerow({h: r.get(h, "") for h in headers})
-                _write_all(path, headers, keep)
-                moved["signals" if "signals" in os.path.basename(path) else "events"] = len(old)
+            if name < cutoff:
+                dest = os.path.join(arch_dir, os.path.basename(path))
+                if os.path.isfile(dest):
+                    os.remove(path)
+                else:
+                    os.rename(path, dest)
+                moved["signals"] += 1
     return moved

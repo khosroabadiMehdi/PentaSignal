@@ -21,7 +21,7 @@ TEHRAN = ZoneInfo("Asia/Tehran")
 
 class TestPentaSignalV3(unittest.TestCase):
     def test_version_and_strategy_unchanged_shape(self):
-        self.assertEqual(settings.VERSION, "3.0.0")
+        self.assertEqual(settings.VERSION, "3.1.3")
         self.assertEqual(scenarios.ACTIVE_SCENARIOS, ["F1", "F2", "F3", "F4", "F5"])
         self.assertEqual(len(scenarios.UNION_SYMBOLS), 21)
         self.assertEqual(settings.FEE_RT, 0.002)

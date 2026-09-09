@@ -8,12 +8,11 @@ venv/
 # رازها
 .env
 
-# داده‌های زمان‌اجرا — کش/لاگ نادیده، ولی CSV/استیت/گزارش‌ها کامیت می‌شوند
-# تا وضعیت ربات بین اجراهای GitHub Actions مانا باشد
+# داده‌های زمان‌اجرا — کش/لاگ نادیده، CSV روزانه سیگنال/استیت/گزارش کامیت می‌شوند
 data/*
 !data/.gitkeep
-!data/signals.csv
-!data/events.csv
+!data/signals/
+!data/signals/**
 !data/state.json
 !data/reports/
 !data/archive/
@@ -24,7 +23,7 @@ data_sim_month/
 data_review/
 *.log
 
-# خروجی‌های محلی شبیه‌سازی (نسخه رسمی در results/ است)
+# خروجی‌های محلی شبیه‌سازی
 sim_result.json
 month_result.json
 tests/last_run_*.json

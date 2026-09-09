@@ -1,3 +1,34 @@
+## 3.1.3 — signal skip report in Action logs
+
+- `detect_new` now prints a diagnostic report each tick:
+  - issued count
+  - skip counts: short history, no detector setup, open position, cooldown, invalid entry
+  - up to 40 sample skip lines with symbol + scenario + reason
+- Visible in GitHub Actions job logs for the signal workflow.
+
+## 3.1.2 — signal issue reason on each row
+
+- Each signal row stores a Persian `reason` explaining why it was issued (detector conditions).
+- Reasons are scenario-specific (Donchian break, crash gate, pullback, rebound, capitulation metrics).
+- Unified daily signal CSV remains the single source of truth.
+
+## 3.1.1 — unified daily signal rows (no separate events)
+
+- Removed separate `events` storage; everything lives on the signal row.
+- Each daily `data/signals/YYYY-MM-DD.csv` row holds entry, status, exit, PnL, fees, BE time, Telegram ids, and notes.
+- `append_event` now appends a short trail into `notes` and sets `be_armed_at_tehran` when relevant.
+- Midnight-safe: open signals remain in their issue-day file and are still updated later.
+
+## 3.1.0 — daily signal/event CSV storage
+
+- Replaced monolithic `signals.csv` / `events.csv` with daily files:
+  - `data/signals/YYYY-MM-DD.csv`
+  - `data/events/YYYY-MM-DD.csv`
+- Open signals stay in their issue-day file and are still found after midnight.
+- `update_signal` locates the original day file (even across days).
+- Rotation moves whole day files older than 90 days into `data/archive/signals|events/`.
+- Workflows and `.gitignore` updated for the new layout.
+
 ## 3.0.1 — cleaner Telegram messages
 
 - Redesigned all Telegram templates (signal / BE / settle).

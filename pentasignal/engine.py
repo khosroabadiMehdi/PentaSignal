@@ -97,6 +97,7 @@ class Engine:
             "atr": f"{atr_val:.10f}",
             "position_size_usd": f"{settings.POSITION_SIZE_USD:.2f}",
             "risk_pct": f"{risk_pct:.4f}",
+            "reason": sig.get("reason", ""),
             "status": STATUS_OPEN,
             "entry_candle_ts": entry_candle_ts,
             "be_armed": "0",
@@ -107,30 +108,72 @@ class Engine:
 
     # ---------- صدور سیگنال جدید ----------
     def detect_new(self, close_dt: datetime, ctx: scenarios.MarketContext) -> list:
-        """اسکن همه نمادها روی آخرین کندل بسته‌شده؛ خروجی لیست MsgLog سیگنال."""
+        """اسکن همه نمادها روی آخرین کندل بسته‌شده؛ خروجی لیست MsgLog سیگنال.
+
+        در پایان یک گزارش تشخیصی در لاگ می‌نویسد تا در GitHub Actions
+        مشخص شود چرا سیگنالی صادر نشده (داده کم، عدم تطبیق دیتکتور،
+        پوزیشن باز، کول‌داون، نبود قیمت ورود).
+        """
         logs = []
         close_ts = int(close_dt.timestamp())
+        stats = {
+            "symbols_scanned": 0,
+            "short_history": 0,
+            "no_setup": 0,
+            "has_open": 0,
+            "cooldown": 0,
+            "no_entry_price": 0,
+            "issued": 0,
+        }
+        skip_details = []  # حداکثر چند نمونه برای خوانایی لاگ
+
+        def _note(reason: str, symbol: str, sid: str = "-", detail: str = ""):
+            if len(skip_details) < 40:
+                skip_details.append(f"{symbol} | {sid} | {reason}" + (f" | {detail}" if detail else ""))
+
         for symbol in scenarios.UNION_SYMBOLS:
             candles = ctx.candles30.get(symbol) or []
             i = self._candle_index_at(candles, close_ts, 1800)
+            stats["symbols_scanned"] += 1
             if i < 60:
+                stats["short_history"] += 1
+                _note("داده_ناکافی", symbol, detail=f"bars={len(candles)} idx={i}")
                 continue
-            for sig in scenarios.run_detectors(candles, i, ctx, symbol):
-                sc = scenarios.SCENARIOS[sig["scenario_id"]]
-                # dedupe: یک پوزیشن باز برای (نماد، سناریو)
-                if store.has_open(symbol, sig["scenario_id"]):
+
+            # برای هر سناریوی مجاز این نماد، وضعیت را جدا گزارش کن
+            matched = {sig["scenario_id"]: sig for sig in scenarios.run_detectors(candles, i, ctx, symbol)}
+            for sid in scenarios.ACTIVE_SCENARIOS:
+                if symbol not in scenarios.SCENARIO_SYMBOLS.get(sid, []):
                     continue
-                # کول‌داون
-                last_t = store.last_signal_time(symbol, sig["scenario_id"])
+                if sid not in matched:
+                    stats["no_setup"] += 1
+                    _note("شرایط_دیتکتور_برقرار_نیست", symbol, sid)
+                    continue
+
+                sig = matched[sid]
+                sc = scenarios.SCENARIOS[sid]
+
+                if store.has_open(symbol, sid):
+                    stats["has_open"] += 1
+                    _note("پوزیشن_باز_موجود", symbol, sid)
+                    continue
+
+                last_t = store.last_signal_time(symbol, sid)
                 if last_t and (close_dt - last_t).total_seconds() < sc["cooldown_h"] * 3600:
+                    stats["cooldown"] += 1
+                    left_h = sc["cooldown_h"] - (close_dt - last_t).total_seconds() / 3600
+                    _note("کول‌داون", symbol, sid, detail=f"باقی≈{left_h:.1f}h")
                     continue
-                # قیمت ورود واقعی (زنده: تیکر | شبیه‌سازی: باز کندل بعد)
+
                 if self.entry_price_provider:
                     entry = self.entry_price_provider(symbol, close_ts)
                 else:
                     entry = float(sig["entry_hint"])
                 if not entry or entry <= 0:
+                    stats["no_entry_price"] += 1
+                    _note("قیمت_ورود_نامعتبر", symbol, sid)
                     continue
+
                 row = self._entry_row(sig, entry, close_dt, entry_candle_ts=close_ts)
                 store.append_signal(row)
                 store.append_event(row["issued_at_tehran"], row["signal_id"],
@@ -143,12 +186,31 @@ class Engine:
                 })
                 log = MsgLog(ts=row["issued_at_tehran"], kind="SIGNAL",
                              text=msg.format_signal(sig2), signal_id=row["signal_id"],
-                             meta={"symbol": symbol, "scenario_id": sig["scenario_id"],
+                             meta={"symbol": symbol, "scenario_id": sid,
                                    "direction": sig["direction"]})
                 self._send(log)
                 store.update_signal(row["signal_id"],
                                     telegram_message_id=log.message_id)
                 logs.append(log)
+                stats["issued"] += 1
+
+        # ----- گزارش تشخیصی برای لاگ Actions -----
+        lines = [
+            "===== گزارش صدور سیگنال =====",
+            f"زمان کندل: {close_dt.strftime('%Y-%m-%d %H:%M')} تهران",
+            f"نمادهای اسکن‌شده: {stats['symbols_scanned']}",
+            f"صادر شده: {stats['issued']}",
+            f"رد — داده ناکافی: {stats['short_history']}",
+            f"رد — شرایط دیتکتور برقرار نیست: {stats['no_setup']}",
+            f"رد — پوزیشن باز موجود: {stats['has_open']}",
+            f"رد — کول‌داون فعال: {stats['cooldown']}",
+            f"رد — قیمت ورود نامعتبر: {stats['no_entry_price']}",
+        ]
+        if skip_details:
+            lines.append("--- نمونه دلایل رد (حداکثر 40) ---")
+            lines.extend(skip_details)
+        lines.append("===== پایان گزارش صدور =====")
+        logger.info("\n".join(lines))
         return logs
 
     # ---------- تعیین تکلیف ----------
@@ -202,10 +264,11 @@ class Engine:
                         be_px = be_price_for(entry, direction)
                         row["be_armed"] = "1"
                         row["be_price"] = f"{be_px:.10f}"
+                        be_at = tehran_str(ts_to_tehran(ev["ts"]))
                         store.update_signal(row["signal_id"], be_armed="1",
-                                            be_price=f"{be_px:.10f}")
-                        store.append_event(tehran_str(ts_to_tehran(ev["ts"])),
-                                           row["signal_id"], "BE_ARMED", f"{be_px:.10f}")
+                                            be_price=f"{be_px:.10f}",
+                                            be_armed_at_tehran=be_at)
+                        store.append_event(be_at, row["signal_id"], "BE_ARMED", f"{be_px:.10f}")
                         sig2 = self._row_to_sig(row)
                         sig2["be_price"] = be_px
                         sig2["bk_arm_r"] = bk_arm

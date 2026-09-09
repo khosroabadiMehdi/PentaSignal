@@ -48,5 +48,5 @@ jobs:
         uses: stefanzweifel/git-auto-commit-action@v5
         with:
           commit_message: "bot: 30m signal tick + 1m market data [skip ci]"
-          file_pattern: "data/*"
-          disable_globbing: true
+          file_pattern: "data/"
+          

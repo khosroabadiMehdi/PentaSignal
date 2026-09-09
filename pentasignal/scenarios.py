@@ -150,7 +150,7 @@ class MarketContext:
 
 
 # ---------- دیتکتورها (بدون آینده‌نگری؛ فقط داده تا کندل i) ----------
-def _base_signal(sc, symbol, direction, i, entry, sl, atr_val, extra=None):
+def _base_signal(sc, symbol, direction, i, entry, sl, atr_val, extra=None, reason=""):
     sig = {
         "scenario_id": sc["id"],
         "symbol": symbol,
@@ -159,6 +159,7 @@ def _base_signal(sc, symbol, direction, i, entry, sl, atr_val, extra=None):
         "entry_hint": entry,
         "stop_loss": sl,
         "atr": atr_val,
+        "reason": reason or sc.get("desc_fa", sc.get("name_fa", sc["id"])),
     }
     if sc["exit_mode"] == "FIXED":
         tp_dist = sc["tp_atr"] * atr_val
@@ -187,8 +188,13 @@ def detect_F1(candles, i, ctx: MarketContext, symbol):
         return None
     entry = px
     sl = entry - sc["sl_atr"] * atr_val
+    don_hi = ind.highest(candles, i, sc["donchian"])
+    reason = (
+        f"کلوز {px:.6g} بالاتر از سقف دونچیان {sc['donchian']} ({don_hi:.6g})؛ "
+        f"رژیم صعودی BTC (EMA21>EMA50 روی 4h)؛ ATR%={(atr_val/px)*100:.2f}"
+    )
     return _base_signal(sc, symbol, "LONG", i, entry, sl, atr_val,
-                        extra={"donchian_hi": ind.highest(candles, i, sc["donchian"])})
+                        extra={"donchian_hi": don_hi}, reason=reason)
 
 
 def detect_F2(candles, i, ctx: MarketContext, symbol):
@@ -210,8 +216,13 @@ def detect_F2(candles, i, ctx: MarketContext, symbol):
         return None
     entry = px
     sl = entry + sc["sl_atr"] * atr_val
+    btc_dd = round(ctx.btc_drawdown_96h() * 100, 1)
+    reason = (
+        f"افت BTC از سقف 96 کندلی = {btc_dd}% (≥{sc['dd_gate']*100:.0f}%)؛ "
+        f"کلوز زیر EMA50 و زیر کف {sc['break_lookback']} کندل"
+    )
     return _base_signal(sc, symbol, "SHORT", i, entry, sl, atr_val,
-                        extra={"btc_dd": round(ctx.btc_drawdown_96h() * 100, 1)})
+                        extra={"btc_dd": btc_dd}, reason=reason)
 
 
 def detect_F3(candles, i, ctx: MarketContext, symbol):
@@ -242,7 +253,12 @@ def detect_F3(candles, i, ctx: MarketContext, symbol):
         return None
     entry = px
     sl = entry - sc["sl_atr"] * atr_val
-    return _base_signal(sc, symbol, "LONG", i, entry, sl, atr_val)
+    slope = (e50 / e50_past - 1.0) * 100 if e50_past else 0.0
+    reason = (
+        f"روند صعودی: شیب EMA50 در {sc['slope_lb']} کندل = {slope:.2f}% (≥{sc['slope_min']*100:.1f}%)؛ "
+        f"لمس EMA21 و کلوز صعودی بالای آن"
+    )
+    return _base_signal(sc, symbol, "LONG", i, entry, sl, atr_val, reason=reason)
 
 
 def detect_F4(candles, i, ctx: MarketContext, symbol):
@@ -271,7 +287,13 @@ def detect_F4(candles, i, ctx: MarketContext, symbol):
         return None
     entry = px
     sl = entry + sc["sl_atr"] * atr_val
-    return _base_signal(sc, symbol, "SHORT", i, entry, sl, atr_val)
+    coin_dd = (1.0 - px / hi72) * 100
+    btc_dd = ctx.btc_drawdown_96h() * 100
+    reason = (
+        f"افت BTC={btc_dd:.1f}% (≥{sc['dd_gate']*100:.1f}%) و افت نماد={coin_dd:.1f}% (≥{sc['coin_dd']*100:.0f}%)؛ "
+        f"بازگشت به EMA21 و کندل رد شدن نزولی"
+    )
+    return _base_signal(sc, symbol, "SHORT", i, entry, sl, atr_val, reason=reason)
 
 
 def detect_F5(candles, i, ctx: MarketContext, symbol):
@@ -298,8 +320,13 @@ def detect_F5(candles, i, ctx: MarketContext, symbol):
         return None
     entry = c["c"]
     sl = entry - sc["sl_atr"] * atr_val
+    vx = round(c["v"] / avg_v, 1) if avg_v else 0
+    reason = (
+        f"حجم {vx}× میانگین20 (≥{sc['vol_x']}×)؛ دامنه {rng/atr_val:.1f}×ATR (≥{sc['range_x']}×)؛ "
+        f"کلوز در {close_pos*100:.0f}% پایینی دامنه و زیر EMA50"
+    )
     return _base_signal(sc, symbol, "LONG", i, entry, sl, atr_val,
-                        extra={"vol_x": round(c["v"] / avg_v, 1)})
+                        extra={"vol_x": vx}, reason=reason)
 
 
 DETECTORS = {

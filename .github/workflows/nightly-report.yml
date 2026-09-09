@@ -48,5 +48,5 @@ jobs:
         uses: stefanzweifel/git-auto-commit-action@v5
         with:
           commit_message: "nightly: 02:00 report + 90d data rotation [skip ci]"
-          file_pattern: "data/*"
-          disable_globbing: true
+          file_pattern: "data/"
+          

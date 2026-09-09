@@ -1,3 +1,3 @@
-"""PentaSignal v3.0.1 — Telegram crypto signal bot (KuCoin public API)."""
+"""PentaSignal v3.1.3 — Telegram crypto signal bot (KuCoin public API)."""
 
-VERSION = "3.0.1"
+VERSION = "3.1.3"

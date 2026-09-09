@@ -3,21 +3,24 @@
 
 import os
 
-VERSION = "3.0.1"
+VERSION = "3.1.3"
 
 # ---------- مسیرها ----------
 BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))  # root پروژه
 # برای تست/شبیه‌سازی می‌توان دایرکتوری داده ایزوله تعریف کرد: PS_DATA_DIR=/path
 DATA_DIR = os.environ.get("PS_DATA_DIR") or os.path.join(BASE_DIR, "data")
+SIGNALS_DIR = os.path.join(DATA_DIR, "signals")
+# سازگاری نام‌های قدیمی (دیگر استفاده عملی ندارند)
 SIGNALS_CSV = os.path.join(DATA_DIR, "signals.csv")
 EVENTS_CSV = os.path.join(DATA_DIR, "events.csv")
+EVENTS_DIR = os.path.join(DATA_DIR, "events")
 REPORTS_DIR = os.path.join(DATA_DIR, "reports")
 ARCHIVE_DIR = os.path.join(DATA_DIR, "archive")
 STATE_JSON = os.path.join(DATA_DIR, "state.json")
 CACHE_DIR = os.path.join(DATA_DIR, "cache")
 LOG_FILE = os.path.join(DATA_DIR, "bot_log.txt")
 
-for _d in (DATA_DIR, REPORTS_DIR, ARCHIVE_DIR, CACHE_DIR):
+for _d in (DATA_DIR, SIGNALS_DIR, REPORTS_DIR, ARCHIVE_DIR, CACHE_DIR):
     os.makedirs(_d, exist_ok=True)
 
 # ---------- تلگرام ----------
