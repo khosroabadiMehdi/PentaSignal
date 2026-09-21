@@ -9,7 +9,7 @@
 
 from . import settings
 from .utils import fmt_price, fa_weekday, duration_fa
-from .exit_engine import STATUS_TP, STATUS_SL, STATUS_BE, STATUS_CM
+from .exit_engine import STATUS_TP, STATUS_SL, STATUS_BE, STATUS_TRAIL, STATUS_CM
 
 VERSION = settings.VERSION
 BRAND = "PentaSignal"
@@ -134,6 +134,7 @@ _SETTLE_HEAD = {
     STATUS_TP: ("🟢", "✅", "حد سود فعال شد", "سود کامل برداشت شد"),
     STATUS_SL: ("🔴", "❌", "حد ضرر فعال شد", "معامله با ضرر بسته شد"),
     STATUS_BE: ("🟡", "➖", "خروج سربه‌سر", "پس از جابجایی استاپ، بدون سود/ضرر بسته شد"),
+    STATUS_TRAIL: ("🔵", "📉", "خروج تریلینگ", "استاپ متحرک فعال شد و پوزیشن بسته شد"),
     STATUS_CM: ("🟠", "🕒", "بستن زمانی پوزیشن", "پس از پایان مهلت نگهداری، با قیمت بازار بسته شد"),
 }
 

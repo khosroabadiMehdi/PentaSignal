@@ -12,7 +12,8 @@ from datetime import datetime, timedelta
 
 from . import settings, store, scenarios, state
 from .exit_engine import (resolve, pnl_usd, be_price_for,
-                          STATUS_TP, STATUS_SL, STATUS_BE, STATUS_CM, STATUS_OPEN)
+                          STATUS_TP, STATUS_SL, STATUS_BE, STATUS_TRAIL,
+                          STATUS_CM, STATUS_OPEN)
 from . import messages as msg
 from .utils import ts_to_tehran, tehran_str, tehran_date, parse_tehran, fmt_price
 
@@ -287,9 +288,11 @@ class Engine:
                 pos = float(row.get("position_size_usd") or settings.POSITION_SIZE_USD)
                 net, ret_pct, fee = pnl_usd(direction, entry, exit_px, pos)
                 held_minutes = res.candles_held * bar_minutes
-                exit_dt = ts_to_tehran(res.exit_candle_ts + 1800)
+                # زمان پایان کندل خروج: برای 1m = +60s و برای 30m = +1800s
+                exit_dt = ts_to_tehran(res.exit_candle_ts + bar_seconds)
                 reason = {STATUS_TP: "TP", STATUS_SL: "SL",
-                          STATUS_BE: "BE", STATUS_CM: "CM"}[res.status]
+                          STATUS_BE: "BE", STATUS_TRAIL: "TRAIL",
+                          STATUS_CM: "CM"}[res.status]
                 store.update_signal(
                     row["signal_id"], status=res.status,
                     exit_price=f"{exit_px:.10f}",

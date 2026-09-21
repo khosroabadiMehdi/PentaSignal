@@ -1,3 +1,11 @@
+## 3.1.4 — TRAIL exit label + nightly stats fix
+
+- Trail stop exits are now `TRAIL_HIT` (not `SL_HIT`), including profitable F3 trails.
+- Telegram settle message has a dedicated trail template.
+- Nightly win-rate counts real PnL winners (pnl > 0), not only fixed TP hits.
+- Nightly report shows TRAIL count separately from SL.
+- Exit timestamp uses the actual bar size (1m vs 30m) so day attribution is correct.
+
 ## 3.1.3 — signal skip report in Action logs
 
 - `detect_new` now prints a diagnostic report each tick:

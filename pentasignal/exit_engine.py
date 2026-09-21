@@ -16,6 +16,7 @@ from . import settings
 STATUS_TP = "TP_HIT"
 STATUS_SL = "SL_HIT"
 STATUS_BE = "BE_HIT"
+STATUS_TRAIL = "TRAIL_HIT"
 STATUS_CM = "CM_CLOSED"
 STATUS_OPEN = "OPEN"
 
@@ -23,6 +24,7 @@ EXIT_REASON = {
     STATUS_TP: "TP",
     STATUS_SL: "SL",
     STATUS_BE: "BE",
+    STATUS_TRAIL: "TRAIL",
     STATUS_CM: "CM",
 }
 
@@ -41,6 +43,17 @@ def be_price_for(entry: float, direction: str, fee_rt: float = None) -> float:
     """قیمت سربه‌سر + بافر کارمزد"""
     fee_rt = fee_rt if fee_rt is not None else settings.FEE_RT
     return entry * (1 + fee_rt) if direction == "LONG" else entry * (1 - fee_rt)
+
+
+def _status_on_stop(armed: bool, stop: float, be_px: float, exit_mode: str,
+                    initial_sl: float) -> str:
+    """تشخیص نوع برخورد استاپ: BE / تریل / حدضرر اولیه."""
+    if armed and abs(stop - be_px) < 1e-12:
+        return STATUS_BE
+    # در مود تریل، برخورد با استاپ (چه اولیه چه جابه‌جاشده) TRAIL است
+    if exit_mode == "TRAIL":
+        return STATUS_TRAIL
+    return STATUS_SL
 
 
 def resolve(entry_candle_index: int,
@@ -83,14 +96,14 @@ def resolve(entry_candle_index: int,
         if (not long) and c["o"] >= stop:
             gap_exit = c["o"]
         if gap_exit is not None:
-            res.status = STATUS_BE if (armed and abs(stop - be_px) < 1e-12) else STATUS_SL
+            res.status = _status_on_stop(armed, stop, be_px, exit_mode, initial_sl)
             res.exit_price = gap_exit
             res.exit_candle_ts = c["t"]
             break
 
         # ---------- استاپ داخل کندل (اولویت اول) ----------
         if (long and c["l"] <= stop) or ((not long) and c["h"] >= stop):
-            res.status = STATUS_BE if (armed and abs(stop - be_px) < 1e-12) else STATUS_SL
+            res.status = _status_on_stop(armed, stop, be_px, exit_mode, initial_sl)
             res.exit_price = stop
             res.exit_candle_ts = c["t"]
             break

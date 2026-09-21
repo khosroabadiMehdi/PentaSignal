@@ -3,7 +3,7 @@
 
 import os
 
-VERSION = "3.1.3"
+VERSION = "3.1.4"
 
 # ---------- مسیرها ----------
 BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))  # root پروژه

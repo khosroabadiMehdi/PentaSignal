@@ -6,7 +6,8 @@ from collections import defaultdict
 from datetime import datetime, timedelta
 
 from . import settings, store
-from .exit_engine import STATUS_TP, STATUS_SL, STATUS_BE, STATUS_CM, STATUS_OPEN
+from .exit_engine import (STATUS_TP, STATUS_SL, STATUS_BE, STATUS_TRAIL,
+                          STATUS_CM, STATUS_OPEN)
 from .scenarios import SCENARIOS, ACTIVE_SCENARIOS
 from .utils import tehran_now, parse_tehran, fmt_price, fa_weekday, duration_fa
 from .messages import hashtags_report, _scenario_line
@@ -32,7 +33,7 @@ def collect_day(report_date: str):
         if et is None:
             continue
         if (et - timedelta(seconds=1)).strftime("%Y-%m-%d") == report_date \
-                and r.get("status") in (STATUS_TP, STATUS_SL, STATUS_BE, STATUS_CM):
+                and r.get("status") in (STATUS_TP, STATUS_SL, STATUS_BE, STATUS_TRAIL, STATUS_CM):
             settled_today.append(r)
     still_open = [r for r in all_rows if r.get("status") == STATUS_OPEN]
     return issued, settled_today, still_open
@@ -51,20 +52,27 @@ def build_report_message(report_date: str) -> str:
         pnl_total += _f(r.get("pnl_usd"))
         fee_total += _f(r.get("fee_usd"))
     closed_n = sum(st_counts.values())
-    wins = st_counts[STATUS_TP]
+    # وین‌ریت بر اساس PnL واقعی (نه فقط TP) — تریل سودده هم برد است
+    wins = sum(1 for r in settled if _f(r.get("pnl_usd")) > 0.005)
+    losses = sum(1 for r in settled if _f(r.get("pnl_usd")) < -0.005)
+    flats = closed_n - wins - losses
     wr = (100.0 * wins / closed_n) if closed_n else 0.0
 
     best = max(settled, key=lambda r: _f(r.get("pnl_usd")), default=None) if settled else None
     worst = min(settled, key=lambda r: _f(r.get("pnl_usd")), default=None) if settled else None
 
     # تفکیک سناریو (سیگنال‌های صادرشده امروز + نتیجه امروزِ همان سناریو)
-    by_sc = defaultdict(lambda: {"issued": 0, "settled": 0, "tp": 0, "sl": 0, "be": 0, "cm": 0, "pnl": 0.0})
+    by_sc = defaultdict(lambda: {
+        "issued": 0, "settled": 0, "tp": 0, "sl": 0, "be": 0, "trail": 0, "cm": 0, "pnl": 0.0,
+    })
     for r in issued:
         by_sc[r.get("scenario_id", "?")]["issued"] += 1
     for r in settled:
         s = by_sc[r.get("scenario_id", "?")]
         s["settled"] += 1
-        s[r["status"].replace("_HIT", "").replace("_CLOSED", "").lower()] += 1
+        key = r["status"].replace("_HIT", "").replace("_CLOSED", "").lower()
+        if key in s:
+            s[key] += 1
         s["pnl"] += _f(r.get("pnl_usd"))
 
     lines = [
@@ -75,11 +83,11 @@ def build_report_message(report_date: str) -> str:
         f"🔒 تعیین‌تکلیف امروز: <b>{len(settled)}</b>",
         "",
         f"✅ TP: {st_counts[STATUS_TP]}   ❌ SL: {st_counts[STATUS_SL]}",
-        f"➖ BE: {st_counts[STATUS_BE]}   🕒 CM: {st_counts[STATUS_CM]}",
+        f"🔵 TRAIL: {st_counts[STATUS_TRAIL]}   ➖ BE: {st_counts[STATUS_BE]}   🕒 CM: {st_counts[STATUS_CM]}",
         f"📂 باز مانده: <b>{len(still_open)}</b>",
         "",
-        f"🏆 وین‌ریت: <b>{wr:.1f}%</b>  |  💵 PnL خالص: <b>{pnl_total:+.2f}$</b>",
-        f"💸 کارمزد کل: {fee_total:.2f}$  |  پوزیشن {settings.POSITION_SIZE_USD:.0f}$",
+        f"🏆 وین‌ریت: <b>{wr:.1f}%</b>  (برد {wins} · باخت {losses} · سربه‌سر {flats})",
+        f"💵 PnL خالص: <b>{pnl_total:+.2f}$</b>  |  💸 کارمزد: {fee_total:.2f}$  |  پوزیشن {settings.POSITION_SIZE_USD:.0f}$",
     ]
 
     if len(issued) == 0:
@@ -95,7 +103,8 @@ def build_report_message(report_date: str) -> str:
             if not s or (s["issued"] == 0 and s["settled"] == 0):
                 lines.append(f"• <b>#{sid}</b> {sc['name_fa']} — بدون مورد")
                 continue
-            tags = f"TP {s['tp']} · SL {s['sl']} · BE {s['be']} · CM {s['cm']}"
+            tags = (f"TP {s['tp']} · SL {s['sl']} · TRAIL {s['trail']} · "
+                    f"BE {s['be']} · CM {s['cm']}")
             lines.append(f"• <b>#{sid}</b> {sc['name_fa']} — سیگنال {s['issued']} | {tags} | {s['pnl']:+.2f}$")
 
     # بهترین/بدترین
