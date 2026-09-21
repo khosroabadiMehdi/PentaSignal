@@ -180,7 +180,8 @@ def _base_signal(sc, symbol, direction, i, entry, sl, atr_val, extra=None, reaso
     }
     if sc["exit_mode"] == "FIXED":
         tp_dist = sc["tp_atr"] * atr_val
-        sig["take_profit"] = entry - tp_dist if direction == "LONG" else entry + tp_dist
+        # LONG هدف بالای ورود؛ SHORT هدف پایین ورود
+        sig["take_profit"] = entry + tp_dist if direction == "LONG" else entry - tp_dist
     if extra:
         sig.update(extra)
     return sig
@@ -215,56 +216,81 @@ def _f1_rows_from_kucoin(candles, i):
     return rows
 
 
+
+def _f1_rows_from_kucoin(candles, i):
+    """30m → ردیف 1h خام برای تغذیه RuleSignalEngine (پشتیبان)."""
+    src = candles[: i + 1]
+    if len(src) < 2:
+        return []
+    bars = []
+    start_i = len(src) % 2
+    for j in range(start_i, len(src), 2):
+        chunk = src[j:j + 2]
+        if len(chunk) == 1:
+            bars.append(chunk[0])
+            continue
+        a, b = chunk[0], chunk[1]
+        bars.append({
+            "t": a.get("t", 0),
+            "o": a["o"], "h": max(a["h"], b["h"]), "l": min(a["l"], b["l"]),
+            "c": b["c"], "v": float(a.get("v") or 0) + float(b.get("v") or 0),
+        })
+    rows = []
+    for c in bars:
+        t0 = int(c.get("t") or 0)
+        ms = t0 if t0 > 10_000_000_000 else t0 * 1000
+        o, h, l, cl, v = c["o"], c["h"], c["l"], c["c"], c.get("v") or 0
+        rows.append([ms, str(o), str(h), str(l), str(cl), str(v), ms + 3_599_999,
+                     "0", 0, "0", "0", "0"])
+    return rows
+
+
 def detect_F1(candles, i, ctx: MarketContext, symbol):
-    """F1 = بستهٔ کامل KhosroAiTrader بدون بازنویسی منطق.
+    """F1 = Rule Book خوسرو + داده ترجیحاً KuCoin 1h (بدون AI).
 
-    از کلاس‌های واقعی پکیج `khosro_ai_trader` استفاده می‌کند:
-      • RuleSignalEngine._evaluate_coin  (rule book v1)
-      • MarketDataHub (کندل 1h بایننس + depth/funding/OI/LSR/F&G)
-      • RiskEngine._validate (min_rr، عرض استاپ، هندسه کامل)
-      • config/config.yaml عیناً
-
-    F2–F5 از این مسیر استفاده نمی‌کنند و تغییر نکرده‌اند.
+    اولویت کندل:
+      1) KuCoin type=1hour
+      2) فشرده‌سازی 30m همان candles
+    لبه depth/funding بایننس فقط در صورت موفقیت (روی Actions اغلب 451 است).
     """
     from datetime import datetime, timezone
     from zoneinfo import ZoneInfo
 
-    from khosro_ai_trader.config import load_config
     from khosro_ai_trader.models import TrendingSnapshot
     from khosro_ai_trader.risk.engine import RiskEngine
     from khosro_ai_trader.signals.engine import RuleSignalEngine
     from khosro_ai_trader.sources.market_data import MarketDataHub
 
+    from . import kucoin as kc
+
     sc = SCENARIOS["F1"]
     base = symbol.split("-")[0].upper()
     pair = f"{base}USDT"
+    kc_symbol = f"{base}-USDT"
 
     cfg = _f1_cfg()
     hub = _f1_hub(cfg)
     engine = _f1_engine(cfg, hub)
 
-    # داده لبهٔ بازار — همان enrich_coins خوسرو
+    # لبه بازار — اختیاری؛ خطا نادیده
     try:
         md_data = hub.enrich_coins([{"symbol": base, "pair": pair}])
     except Exception:
         md_data = {}
 
-    # اگر Binance در دسترس نبود، همان RuleSignalEngine با کندل‌های 1h
-    # ساخته‌شده از KuCoin 30m تغذیه می‌شود (منطق رأی عوض نمی‌شود).
+    # --- کندل 1h: اول KuCoin ---
+    rows = []
     try:
-        rows = hub.fetch_klines(pair, cfg.signals.kline_interval, cfg.signals.kline_limit)
+        rows = kc.fetch_1h_binance_style(kc_symbol, limit=cfg.signals.kline_limit, use_cache=True)
     except Exception:
         rows = []
     if not rows or len(rows) < 220:
+        # پشتیبان: fold 30m
         rows = _f1_rows_from_kucoin(candles, i)
-        if rows and len(rows) >= 220:
-            engine._klines_cache[pair] = rows
-        else:
-            return None
-    else:
-        engine._klines_cache[pair] = rows
+    if not rows or len(rows) < 220:
+        return None
+    engine._klines_cache[pair] = rows
 
-    # snapshot خالی از نظر ترند؛ AI روی ctx اگر باشد
     now = datetime.now(timezone.utc)
     tehran = now.astimezone(ZoneInfo("Asia/Tehran"))
     snap = TrendingSnapshot(
@@ -272,8 +298,8 @@ def detect_F1(candles, i, ctx: MarketContext, symbol):
         run_at_tehran=tehran.strftime("%Y-%m-%d %H:%M"),
         duration_seconds=0.0,
     )
-    if getattr(ctx, "khosro_ai", None) is not None:
-        snap.ai = ctx.khosro_ai
+    # AI حذف شده — fusion خاموش
+    snap.ai = None
 
     try:
         raw = engine._evaluate_coin(base, pair, snap, md_data)
@@ -282,7 +308,6 @@ def detect_F1(candles, i, ctx: MarketContext, symbol):
     if raw is None:
         return None
 
-    # اعتبارسنجی ریسک عین RiskEngine (بدون journal/circuit)
     risk = RiskEngine(cfg)
     reject = risk._validate(raw)
     if reject:
@@ -298,7 +323,7 @@ def detect_F1(candles, i, ctx: MarketContext, symbol):
     reasons = list(raw.reasons or [])
     conf = raw.confidence
     reason = (
-        f"KhosroAiTrader rule-book v1 | {direction} conf={conf} | "
+        f"Khosro rule-book v1 | {direction} conf={conf} | "
         + "؛ ".join(reasons[:5])
     )
     extra = {
@@ -312,6 +337,7 @@ def detect_F1(candles, i, ctx: MarketContext, symbol):
         "notional_usd_khosro": raw.notional_usd,
     }
     return _base_signal(sc, symbol, direction, i, entry, sl, atr_val, extra=extra, reason=reason)
+
 
 
 _F1_CFG = None

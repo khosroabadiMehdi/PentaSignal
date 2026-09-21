@@ -1,3 +1,19 @@
+## 3.5.0 — F1 discovery without AI; prefer KuCoin data
+
+- **AI fully removed** from F1 path (`discovery`, settings, `ctx.khosro_ai=None`).
+- Trend selection: CoinGecko `GET /api/v3/search/trending` + KuCoin `allTickers` momentum/volume scoring → top-N ∩ pool ∪ main coins (BTC/ETH/BNB/SOL/XRP).
+- F1 klines: **KuCoin 1hour first** (`fetch_1h_binance_style`); 30m fold only as backup.
+- Binance depth/funding remain optional (often HTTP 451 on GitHub Actions) and never block F1.
+- Fixed FIXED take-profit side retained from 3.4.1.
+- F2–F5 unchanged.
+
+## 3.4.1 — fix FIXED take-profit sign (LONG above entry)
+
+- Bug: `exit_mode=FIXED` computed TP on the wrong side of entry (LONG TP was below entry).
+- Seen in live F1 BNB: entry 784.45 / bogus exit 764.43.
+- Fix in `scenarios._base_signal` and `engine._entry_row`: LONG → entry+dist, SHORT → entry−dist.
+- `_entry_row` now prefers detector-provided `stop_loss` / `take_profit` (F1/Khosro geometry) instead of always recomputing from tp_atr.
+
 ## 3.4.0 — F1 AI discovery: multi-source trends + news + LLM coin selection
 
 خط لوله F1 دقیقاً همان طراحی توافق‌شده شد: **ترند از چندجا → خواندن اخبار → مشورت AI

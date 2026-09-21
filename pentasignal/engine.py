@@ -68,13 +68,20 @@ class Engine:
         sc = scenarios.SCENARIOS[sig["scenario_id"]]
         atr_val = sig["atr"]
         long = sig["direction"] == "LONG"
-        sl = entry - sc["sl_atr"] * atr_val if long else entry + sc["sl_atr"] * atr_val
+        # اگر دیتکتور (مثل F1/Khosro) SL/TP داده، همان را نگه دار
+        if sig.get("stop_loss") is not None:
+            sl = float(sig["stop_loss"])
+        else:
+            sl = entry - sc["sl_atr"] * atr_val if long else entry + sc["sl_atr"] * atr_val
         tp = ""
         exit_param = ""
-        if sc["exit_mode"] == "FIXED":
-            tp = entry - sc["tp_atr"] * atr_val if long else entry + sc["tp_atr"] * atr_val
-            tp = f"{tp:.10f}"
-        elif sc["exit_mode"] == "TRAIL":
+        if sig.get("take_profit") is not None and sig.get("take_profit") != "":
+            tp = f"{float(sig['take_profit']):.10f}"
+        elif sc["exit_mode"] == "FIXED":
+            # LONG: هدف بالای ورود · SHORT: هدف پایین ورود
+            tp_px = entry + sc["tp_atr"] * atr_val if long else entry - sc["tp_atr"] * atr_val
+            tp = f"{tp_px:.10f}"
+        if sc["exit_mode"] == "TRAIL":
             exit_param = sc["trail_atr"]
         elif sc["exit_mode"] == "BK":
             exit_param = f"arm={sc['bk_arm_r']}"
@@ -240,12 +247,10 @@ class Engine:
                 f"کشف ترند F1 (v3.4.0): حالت {sel.get('mode')} · منابع سالم "
                 f"{','.join(di.get('sources_ok') or []) or '-'}"
                 f" · اخبار {ai.get('news_count', '-')}"
-                f" · AI {ai.get('model') or 'خاموش'}"
+                f" · انتخاب rules (بدون AI)"
                 f" · سنتیمنت {ai.get('sentiment') or '-'}"
                 f" ({ai.get('sentiment_confidence', '-')}%)"
             )
-            if ai.get("market_summary"):
-                lines.append(f"خلاصه AI: {ai['market_summary']}")
             rows = sel.get("rows") or []
             if rows:
                 lines.append("تاییدیه‌های AI: " + " | ".join(

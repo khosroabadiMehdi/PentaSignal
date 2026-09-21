@@ -65,7 +65,7 @@ def fetch_candles(symbol: str, ctype: str, start_ts: int, end_ts: int, use_cache
 def fetch_recent(symbol: str, ctype: str, days: int, use_cache=True, now_ts=None):
     """کندل‌های «بسته‌شده» recent با کش دیسکی پایدار (کلید کش روی مرز کندل گرد می‌شود)."""
     now = int(now_ts) if now_ts else int(time.time())
-    step = {"30min": 1800, "15min": 900, "5min": 300, "1min": 60}.get(ctype)
+    step = {"30min": 1800, "15min": 900, "5min": 300, "1min": 60, "1hour": 3600, "4hour": 14400}.get(ctype)
     if step:
         now = (now // step) * step  # فقط کندل‌های بسته‌شده → کلید کش ثابت در هر کندل
     end_ts = now
@@ -78,7 +78,7 @@ def fetch_recent(symbol: str, ctype: str, days: int, use_cache=True, now_ts=None
 def fetch_recent_minutes(symbol: str, ctype: str, minutes: int, use_cache=True, now_ts=None):
     """داده اخیر بر حسب دقیقه؛ فقط کندل‌های کاملاً بسته‌شده."""
     now = int(now_ts) if now_ts else int(time.time())
-    step = {"30min": 1800, "4hour": 14400, "1min": 60}.get(ctype)
+    step = {"30min": 1800, "4hour": 14400, "1min": 60, "1hour": 3600}.get(ctype)
     if step:
         now = (now // step) * step
     start_ts = now - int(minutes) * 60
@@ -111,3 +111,23 @@ def chunked_candles(symbol: str, ctype: str, start_ts: int, end_ts: int, chunk_d
             seen.add(c["t"])
             uniq.append(c)
     return uniq
+
+
+def fetch_1h_binance_style(symbol: str, limit: int = 300, use_cache: bool = True):
+    """کندل 1hour کوکوین → ردیف خام Binance-style برای RuleSignalEngine.
+
+    symbol: فرم KuCoin مثل BTC-USDT
+    """
+    import time as _time
+    now = int(_time.time())
+    now = (now // 3600) * 3600  # فقط میله‌های بسته‌شده
+    start = now - int(limit) * 3600
+    candles = fetch_candles(symbol, "1hour", start, now, use_cache=use_cache)
+    rows = []
+    for c in candles[-limit:]:
+        ms = int(c["t"]) * 1000
+        rows.append([
+            ms, str(c["o"]), str(c["h"]), str(c["l"]), str(c["c"]), str(c.get("v") or 0),
+            ms + 3_599_999, "0", 0, "0", "0", "0",
+        ])
+    return rows

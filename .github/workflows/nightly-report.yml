@@ -1,5 +1,5 @@
-# PentaSignal v3.4.0 — گزارش شبانه دقیقاً ساعت 02:00 تهران
-name: "PentaSignal v3.4.0 · Nightly 02:00"
+# PentaSignal v3.5.0 — گزارش شبانه دقیقاً ساعت 02:00 تهران
+name: "PentaSignal v3.5.0 · Nightly 02:00"
 
 on:
   schedule:
@@ -13,7 +13,7 @@ concurrency:
 
 jobs:
   nightly:
-    name: "v3.4.0 · گزارش شبانه 02:00 + نگهداری 90 روزه"
+    name: "v3.5.0 · گزارش شبانه 02:00 + نگهداری 90 روزه"
     runs-on: ubuntu-latest
     timeout-minutes: 15
     permissions:

@@ -1,5 +1,5 @@
-# PentaSignal v3.4.0 — 20:30 تا 01:00 تهران فقط تعیین تکلیف
-name: "PentaSignal v3.4.0 · Settle 20:30–01"
+# PentaSignal v3.5.0 — 20:30 تا 01:00 تهران فقط تعیین تکلیف
+name: "PentaSignal v3.5.0 · Settle 20:30–01"
 
 on:
   schedule:
@@ -14,7 +14,7 @@ concurrency:
 
 jobs:
   settle:
-    name: "v3.4.0 · تسویه 1m — بدون سیگنال جدید"
+    name: "v3.5.0 · تسویه 1m — بدون سیگنال جدید"
     runs-on: ubuntu-latest
     timeout-minutes: 15
     permissions:
