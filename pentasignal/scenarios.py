@@ -141,6 +141,7 @@ class MarketContext:
         self.btc_4h = btc_4h or []
         self.candles1m = candles1m or {}
         self.f1_universe = None
+        self.f1_extra_symbols = set()
         self.khosro_ai = None
         self.discovery_info = None
         self._btc_regime = None
@@ -245,101 +246,6 @@ def _f1_rows_from_kucoin(candles, i):
     return rows
 
 
-def detect_F1(candles, i, ctx: MarketContext, symbol):
-    """F1 = Rule Book خوسرو + داده ترجیحاً KuCoin 1h (بدون AI).
-
-    اولویت کندل:
-      1) KuCoin type=1hour
-      2) فشرده‌سازی 30m همان candles
-    لبه depth/funding بایننس فقط در صورت موفقیت (روی Actions اغلب 451 است).
-    """
-    from datetime import datetime, timezone
-    from zoneinfo import ZoneInfo
-
-    from khosro_ai_trader.models import TrendingSnapshot
-    from khosro_ai_trader.risk.engine import RiskEngine
-    from khosro_ai_trader.signals.engine import RuleSignalEngine
-    from khosro_ai_trader.sources.market_data import MarketDataHub
-
-    from . import kucoin as kc
-
-    sc = SCENARIOS["F1"]
-    base = symbol.split("-")[0].upper()
-    pair = f"{base}USDT"
-    kc_symbol = f"{base}-USDT"
-
-    cfg = _f1_cfg()
-    hub = _f1_hub(cfg)
-    engine = _f1_engine(cfg, hub)
-
-    # لبه بازار — اختیاری؛ خطا نادیده
-    try:
-        md_data = hub.enrich_coins([{"symbol": base, "pair": pair}])
-    except Exception:
-        md_data = {}
-
-    # --- کندل 1h: اول KuCoin ---
-    rows = []
-    try:
-        rows = kc.fetch_1h_binance_style(kc_symbol, limit=cfg.signals.kline_limit, use_cache=True)
-    except Exception:
-        rows = []
-    if not rows or len(rows) < 220:
-        # پشتیبان: fold 30m
-        rows = _f1_rows_from_kucoin(candles, i)
-    if not rows or len(rows) < 220:
-        return None
-    engine._klines_cache[pair] = rows
-
-    now = datetime.now(timezone.utc)
-    tehran = now.astimezone(ZoneInfo("Asia/Tehran"))
-    snap = TrendingSnapshot(
-        run_at_utc=now.strftime("%Y-%m-%d %H:%M UTC"),
-        run_at_tehran=tehran.strftime("%Y-%m-%d %H:%M"),
-        duration_seconds=0.0,
-    )
-    # AI حذف شده — fusion خاموش
-    snap.ai = None
-
-    try:
-        raw = engine._evaluate_coin(base, pair, snap, md_data)
-    except Exception:
-        return None
-    if raw is None:
-        return None
-
-    risk = RiskEngine(cfg)
-    reject = risk._validate(raw)
-    if reject:
-        return None
-    risk._size(raw)
-
-    entry = float(raw.entry)
-    sl = float(raw.stop_loss)
-    atr_val = float((raw.meta or {}).get("atr") or abs(entry - sl) / max(cfg.signals.atr_sl_multiplier, 1e-9))
-    direction = "LONG" if raw.direction == "long" else "SHORT"
-    tps = list(raw.take_profits or [])
-    tp = float(tps[1]) if len(tps) > 1 else (float(tps[0]) if tps else None)
-    reasons = list(raw.reasons or [])
-    conf = raw.confidence
-    reason = (
-        f"Khosro rule-book v1 | {direction} conf={conf} | "
-        + "؛ ".join(reasons[:5])
-    )
-    extra = {
-        "take_profit": tp,
-        "take_profits": tps,
-        "f1_confidence": conf,
-        "khosro_meta": dict(raw.meta or {}),
-        "khosro_rr": raw.rr,
-        "khosro_r_value": raw.r_value,
-        "position_size_usd_khosro": raw.position_size_usd,
-        "notional_usd_khosro": raw.notional_usd,
-    }
-    return _base_signal(sc, symbol, direction, i, entry, sl, atr_val, extra=extra, reason=reason)
-
-
-
 _F1_CFG = None
 _F1_HUB = None
 _F1_ENGINE = None
@@ -373,136 +279,265 @@ def _f1_engine(cfg, hub):
 
 
 def detect_F2(candles, i, ctx: MarketContext, symbol):
+    sig, _ = evaluate_F2(candles, i, ctx, symbol)
+    return sig
+
+
+def evaluate_F2(candles, i, ctx: MarketContext, symbol):
     sc = SCENARIOS["F2"]
-    if ctx.btc_drawdown_96h() < sc["dd_gate"]:
-        return None
+    btc_dd = ctx.btc_drawdown_96h()
+    if btc_dd < sc["dd_gate"]:
+        return None, f"افت_BTC={btc_dd*100:.1f}% < آستانه {sc['dd_gate']*100:.0f}% (کرش نیست)"
     if i < 80:
-        return None
+        return None, f"داده_کم i={i}<80"
     closes = [c["c"] for c in candles[:i + 1]]
     e50 = ind.ema(closes, 50)
     a = ind.atr_series(candles, 14)
     atr_val = a[i]
     if not e50 or not atr_val:
-        return None
+        return None, "EMA50/ATR نامعتبر"
     px = candles[i]["c"]
     if px >= e50:
-        return None
-    if px >= ind.lowest(candles, i, sc["break_lookback"]):
-        return None
+        return None, f"قیمت {px:.6g} ≥ EMA50 {e50:.6g} (باید زیر باشد)"
+    low8 = ind.lowest(candles, i, sc["break_lookback"])
+    if px >= low8:
+        return None, f"شکست_کف نیست: کلوز {px:.6g} ≥ کف{sc['break_lookback']}={low8:.6g}"
     entry = px
     sl = entry + sc["sl_atr"] * atr_val
-    btc_dd = round(ctx.btc_drawdown_96h() * 100, 1)
     reason = (
-        f"افت BTC از سقف 96 کندلی = {btc_dd}% (≥{sc['dd_gate']*100:.0f}%)؛ "
+        f"افت BTC از سقف 96 کندلی = {btc_dd*100:.1f}% (≥{sc['dd_gate']*100:.0f}%)؛ "
         f"کلوز زیر EMA50 و زیر کف {sc['break_lookback']} کندل"
     )
     return _base_signal(sc, symbol, "SHORT", i, entry, sl, atr_val,
-                        extra={"btc_dd": btc_dd}, reason=reason)
+                        extra={"btc_dd": round(btc_dd * 100, 1)}, reason=reason), None
 
 
 def detect_F3(candles, i, ctx: MarketContext, symbol):
+    sig, _ = evaluate_F3(candles, i, ctx, symbol)
+    return sig
+
+
+def evaluate_F3(candles, i, ctx: MarketContext, symbol):
     """پول‌بک لانگ: روند صعودی + لمس EMA21 + کندل برگشتی"""
     sc = SCENARIOS["F3"]
-    if i < 80 + sc["slope_lb"]:
-        return None
+    need = 80 + sc["slope_lb"]
+    if i < need:
+        return None, f"داده_کم i={i}<{need}"
     closes = [c["c"] for c in candles[:i + 1]]
     e21 = ind.ema(closes, 21)
     e50 = ind.ema(closes, 50)
     a = ind.atr_series(candles, 14)
     atr_val = a[i]
     if not e21 or not e50 or not atr_val:
-        return None
+        return None, "EMA/ATR نامعتبر"
     e50_past = ind.ema(closes[:i + 1 - sc["slope_lb"]], 50)
     if not e50_past:
-        return None
+        return None, "EMA50 گذشته نامعتبر"
     px = candles[i]["c"]
-    # گیت روند: شیب EMA50 و قیمت بالای آن
+    slope = (e50 / e50_past - 1.0) if e50_past else 0.0
     if e50 < e50_past * (1 + sc["slope_min"]):
-        return None
+        return None, f"شیب_EMA50={slope*100:.2f}% < {sc['slope_min']*100:.1f}% (روند ضعیف)"
     if px <= e50:
-        return None
-    # پول‌بک: لمس EMA21 + کلوز صعودی بالای EMA21
-    if candles[i]["l"] > e21 + sc["touch_atr"] * atr_val:
-        return None
-    if px <= e21 or px <= candles[i]["o"]:
-        return None
+        return None, f"قیمت {px:.6g} ≤ EMA50 {e50:.6g} (باید بالای روند باشد)"
+    touch_lim = e21 + sc["touch_atr"] * atr_val
+    if candles[i]["l"] > touch_lim:
+        return None, f"پول‌بک_به_EMA21 نیست: low={candles[i]['l']:.6g} > EMA21+{sc['touch_atr']}ATR={touch_lim:.6g}"
+    if px <= e21:
+        return None, f"کلوز {px:.6g} ≤ EMA21 {e21:.6g}"
+    if px <= candles[i]["o"]:
+        return None, f"کندل_نزولی/دوجی: close={px:.6g} ≤ open={candles[i]['o']:.6g}"
     entry = px
     sl = entry - sc["sl_atr"] * atr_val
-    slope = (e50 / e50_past - 1.0) * 100 if e50_past else 0.0
     reason = (
-        f"روند صعودی: شیب EMA50 در {sc['slope_lb']} کندل = {slope:.2f}% (≥{sc['slope_min']*100:.1f}%)؛ "
+        f"شیب EMA50={slope*100:.2f}% (≥{sc['slope_min']*100:.1f}%)؛ "
         f"لمس EMA21 و کلوز صعودی بالای آن"
     )
-    return _base_signal(sc, symbol, "LONG", i, entry, sl, atr_val, reason=reason)
+    return _base_signal(sc, symbol, "LONG", i, entry, sl, atr_val, reason=reason), None
 
 
 def detect_F4(candles, i, ctx: MarketContext, symbol):
-    """ریباند-شورت: افت BTC + افت خود نماد + بازگشت به EMA21 + کندل رد شدن"""
+    sig, _ = evaluate_F4(candles, i, ctx, symbol)
+    return sig
+
+
+def evaluate_F4(candles, i, ctx: MarketContext, symbol):
     sc = SCENARIOS["F4"]
-    if ctx.btc_drawdown_96h() < sc["dd_gate"]:
-        return None
+    btc_dd = ctx.btc_drawdown_96h()
+    if btc_dd < sc["dd_gate"]:
+        return None, f"افت_BTC={btc_dd*100:.1f}% < {sc['dd_gate']*100:.1f}%"
     if i < 120:
-        return None
+        return None, f"داده_کم i={i}<120"
     closes = [c["c"] for c in candles[:i + 1]]
     e21 = ind.ema(closes, 21)
     e50 = ind.ema(closes, 50)
     a = ind.atr_series(candles, 14)
     atr_val = a[i]
     if not e21 or not e50 or not atr_val:
-        return None
+        return None, "EMA/ATR نامعتبر"
     px = candles[i]["c"]
     hi72 = max(c["h"] for c in candles[i - 71:i + 1])
-    if (1.0 - px / hi72) < sc["coin_dd"]:
-        return None
+    coin_dd = (1.0 - px / hi72) if hi72 else 0.0
+    if coin_dd < sc["coin_dd"]:
+        return None, f"افت_نماد={coin_dd*100:.1f}% < {sc['coin_dd']*100:.0f}%"
     if px >= e50:
-        return None
+        return None, f"قیمت {px:.6g} ≥ EMA50 {e50:.6g}"
     if candles[i]["h"] < e21 - sc["touch_atr"] * atr_val:
-        return None
-    if px >= candles[i]["o"] or px >= e21:
-        return None
+        return None, f"نرسیده_به_EMA21: high={candles[i]['h']:.6g} < EMA21-{sc['touch_atr']}ATR"
+    if px >= candles[i]["o"]:
+        return None, f"کندل_صعودی: close≥open"
+    if px >= e21:
+        return None, f"کلوز {px:.6g} ≥ EMA21 {e21:.6g} (باید زیر باشد)"
     entry = px
     sl = entry + sc["sl_atr"] * atr_val
-    coin_dd = (1.0 - px / hi72) * 100
-    btc_dd = ctx.btc_drawdown_96h() * 100
     reason = (
-        f"افت BTC={btc_dd:.1f}% (≥{sc['dd_gate']*100:.1f}%) و افت نماد={coin_dd:.1f}% (≥{sc['coin_dd']*100:.0f}%)؛ "
+        f"افت BTC={btc_dd*100:.1f}% و افت نماد={coin_dd*100:.1f}%؛ "
         f"بازگشت به EMA21 و کندل رد شدن نزولی"
     )
-    return _base_signal(sc, symbol, "SHORT", i, entry, sl, atr_val, reason=reason)
+    return _base_signal(sc, symbol, "SHORT", i, entry, sl, atr_val, reason=reason), None
 
 
 def detect_F5(candles, i, ctx: MarketContext, symbol):
+    sig, _ = evaluate_F5(candles, i, ctx, symbol)
+    return sig
+
+
+def evaluate_F5(candles, i, ctx: MarketContext, symbol):
     sc = SCENARIOS["F5"]
     if i < 80:
-        return None
+        return None, f"داده_کم i={i}<80"
     a = ind.atr_series(candles, 14)
     atr_val = a[i]
     if not atr_val:
-        return None
+        return None, "ATR نامعتبر"
     c = candles[i]
     avg_v = ind.avg_volume(candles, i, 20)
-    if avg_v <= 0 or c["v"] < sc["vol_x"] * avg_v:
-        return None
+    if avg_v <= 0:
+        return None, "حجم_میانگین صفر"
+    vx = c["v"] / avg_v
+    if c["v"] < sc["vol_x"] * avg_v:
+        return None, f"حجم {vx:.2f}× < آستانه {sc['vol_x']}×"
     rng = c["h"] - c["l"]
     if rng < sc["range_x"] * atr_val:
-        return None
+        return None, f"دامنه {rng/atr_val:.2f}×ATR < {sc['range_x']}×"
     close_pos = (c["c"] - c["l"]) / rng if rng > 0 else 1.0
     if close_pos > sc["close_pos_max"]:
-        return None
+        return None, f"کلوز_بالا در {close_pos*100:.0f}% دامنه > {sc['close_pos_max']*100:.0f}% (باید نزدیک کف)"
     closes = [x["c"] for x in candles[:i + 1]]
     e50 = ind.ema(closes, 50)
-    if not e50 or c["c"] >= e50:
-        return None
+    if not e50:
+        return None, "EMA50 نامعتبر"
+    if c["c"] >= e50:
+        return None, f"کلوز {c['c']:.6g} ≥ EMA50 {e50:.6g}"
     entry = c["c"]
     sl = entry - sc["sl_atr"] * atr_val
-    vx = round(c["v"] / avg_v, 1) if avg_v else 0
     reason = (
-        f"حجم {vx}× میانگین20 (≥{sc['vol_x']}×)؛ دامنه {rng/atr_val:.1f}×ATR (≥{sc['range_x']}×)؛ "
-        f"کلوز در {close_pos*100:.0f}% پایینی دامنه و زیر EMA50"
+        f"حجم {vx:.1f}× میانگین20؛ دامنه {rng/atr_val:.1f}×ATR؛ "
+        f"کلوز در {close_pos*100:.0f}% پایینی و زیر EMA50"
     )
     return _base_signal(sc, symbol, "LONG", i, entry, sl, atr_val,
-                        extra={"vol_x": vx}, reason=reason)
+                        extra={"vol_x": round(vx, 1)}, reason=reason), None
 
+
+def detect_F1(candles, i, ctx: MarketContext, symbol):
+    sig, _ = evaluate_F1(candles, i, ctx, symbol)
+    return sig
+
+
+def evaluate_F1(candles, i, ctx: MarketContext, symbol):
+    """همان detect_F1 با دلیل رد برای لاگ."""
+    # بدنه را از detect_F1 قبلی صدا می‌زنیم با کپی منطق — برای جلوگیری از دوباره‌کاری
+    # منطق اصلی را اینجا نگه می‌داریم.
+    from datetime import datetime, timezone
+    from zoneinfo import ZoneInfo
+    from khosro_ai_trader.models import TrendingSnapshot
+    from khosro_ai_trader.risk.engine import RiskEngine
+    from . import kucoin as kc
+
+    sc = SCENARIOS["F1"]
+    base = symbol.split("-")[0].upper()
+    pair = f"{base}USDT"
+    kc_symbol = f"{base}-USDT"
+
+    cfg = _f1_cfg()
+    hub = _f1_hub(cfg)
+    engine = _f1_engine(cfg, hub)
+
+    try:
+        md_data = hub.enrich_coins([{"symbol": base, "pair": pair}])
+    except Exception:
+        md_data = {}
+
+    rows = []
+    try:
+        rows = kc.fetch_1h_binance_style(kc_symbol, limit=cfg.signals.kline_limit, use_cache=True)
+    except Exception as exc:
+        rows = []
+        kucoin_err = str(exc)[:80]
+    else:
+        kucoin_err = None
+    if not rows or len(rows) < 220:
+        rows = _f1_rows_from_kucoin(candles, i)
+        src = "fold30m"
+    else:
+        src = "kucoin1h"
+    if not rows or len(rows) < 220:
+        return None, f"کندل_1h ناکافی ({src}, n={len(rows) if rows else 0})" + (f" err={kucoin_err}" if kucoin_err else "")
+    engine._klines_cache[pair] = rows
+
+    now = datetime.now(timezone.utc)
+    tehran = now.astimezone(ZoneInfo("Asia/Tehran"))
+    snap = TrendingSnapshot(
+        run_at_utc=now.strftime("%Y-%m-%d %H:%M UTC"),
+        run_at_tehran=tehran.strftime("%Y-%m-%d %H:%M"),
+        duration_seconds=0.0,
+    )
+    snap.ai = None
+
+    try:
+        raw = engine._evaluate_coin(base, pair, snap, md_data)
+    except Exception as exc:
+        return None, f"خطای_موتور_رأی: {str(exc)[:100]}"
+    if raw is None:
+        return None, f"RuleBook رد کرد (score/gap/ATR از آستانه نگذشت) src={src} bars={len(rows)}"
+
+    risk = RiskEngine(cfg)
+    reject = risk._validate(raw)
+    if reject:
+        return None, f"ریسک_رد: {reject}"
+    risk._size(raw)
+
+    entry = float(raw.entry)
+    sl = float(raw.stop_loss)
+    atr_val = float((raw.meta or {}).get("atr") or abs(entry - sl) / max(cfg.signals.atr_sl_multiplier, 1e-9))
+    direction = "LONG" if raw.direction == "long" else "SHORT"
+    tps = list(raw.take_profits or [])
+    tp = float(tps[1]) if len(tps) > 1 else (float(tps[0]) if tps else None)
+    reasons = list(raw.reasons or [])
+    conf = raw.confidence
+    reason = (
+        f"Khosro rule-book v1 | {direction} conf={conf} | "
+        + "؛ ".join(reasons[:5])
+    )
+    extra = {
+        "take_profit": tp,
+        "take_profits": tps,
+        "f1_confidence": conf,
+        "khosro_meta": dict(raw.meta or {}),
+        "khosro_rr": raw.rr,
+        "khosro_r_value": raw.r_value,
+        "position_size_usd_khosro": raw.position_size_usd,
+        "notional_usd_khosro": raw.notional_usd,
+    }
+    return _base_signal(sc, symbol, direction, i, entry, sl, atr_val, extra=extra, reason=reason), None
+
+
+EVALUATORS = {
+    "F1": evaluate_F1,
+    "F2": evaluate_F2,
+    "F3": evaluate_F3,
+    "F4": evaluate_F4,
+    "F5": evaluate_F5,
+}
 
 DETECTORS = {
     "F1": detect_F1,
@@ -514,20 +549,43 @@ DETECTORS = {
 
 
 def run_detectors(candles, i, ctx: MarketContext, symbol):
+    """خروجی: لیست سیگنال‌های صادرشدنی (سازگاری قبلی)."""
+    issued, _rejects = run_detectors_detailed(candles, i, ctx, symbol)
+    return issued
+
+
+def run_detectors_detailed(candles, i, ctx: MarketContext, symbol):
+    """خروجی: (لیست سیگنال، لیست رد با دلیل).
+
+    هر رد: {"scenario_id", "symbol", "reason"}
+    """
     out = []
+    rejects = []
     base = symbol.split("-")[0].upper()
     for sid in ACTIVE_SCENARIOS:
-        if symbol not in SCENARIO_SYMBOLS[sid]:
-            continue
-        # گشت کشف ترند F1 (از v3.4.0): خارج از «انتخاب AI + ارزهای اصلی» اسکن نشو.
-        # فقط F1 فیلتر می‌شود؛ F2–F5 روی کل استخر خودشان باقی می‌مانند.
+        extra = getattr(ctx, "f1_extra_symbols", None) or set()
+        in_extra = symbol in extra
+        if symbol not in SCENARIO_SYMBOLS.get(sid, []):
+            # فقط F1 مجاز است روی نماد ترند خارج‌استخر
+            if not (sid == "F1" and in_extra):
+                continue
         if sid == "F1" and getattr(ctx, "f1_universe", None) is not None \
                 and base not in ctx.f1_universe:
+            rejects.append({
+                "scenario_id": sid, "symbol": symbol,
+                "reason": f"خارج_از_universe_کشف (universe={sorted(ctx.f1_universe)})",
+            })
             continue
         try:
-            sig = DETECTORS[sid](candles, i, ctx, symbol)
-        except Exception:
-            sig = None
+            sig, why = EVALUATORS[sid](candles, i, ctx, symbol)
+        except Exception as exc:
+            sig, why = None, f"استثنا: {type(exc).__name__}: {str(exc)[:120]}"
         if sig:
             out.append(sig)
-    return out
+        else:
+            rejects.append({
+                "scenario_id": sid, "symbol": symbol,
+                "reason": why or "شرایط برقرار نیست",
+            })
+    return out, rejects
+

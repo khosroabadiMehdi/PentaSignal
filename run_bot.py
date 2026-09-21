@@ -138,8 +138,29 @@ def run_once(engine: Engine, forced_mode: str | None = None) -> int:
                 from pentasignal import discovery
                 res = discovery.apply(ctx)
                 if res is not None:
-                    logger.info("F1 discovery: mode=%s universe=%s",
-                                res.mode, sorted(res.universe or []))
+                    logger.info(
+                        "F1 discovery: mode=%s universe=%s trend_extra=%s",
+                        res.mode, sorted(res.universe or []),
+                        sorted(getattr(ctx, "f1_extra_symbols", set()) or []),
+                    )
+                    # کندل 30m برای نمادهای فقط‌ترند (خارج استخر) تا اسکن F1 ممکن شود
+                    for sym in sorted(getattr(ctx, "f1_extra_symbols", set()) or []):
+                        if sym in ctx.candles30 and ctx.candles30[sym]:
+                            continue
+                        try:
+                            ctx.candles30[sym] = kucoin.fetch_recent(
+                                sym, settings.CANDLE_TYPE_30M,
+                                settings.LOOKBACK_DAYS_30M, now_ts=ts,
+                            )
+                            logger.info("F1 trend_extra candles loaded: %s n=%d",
+                                        sym, len(ctx.candles30.get(sym) or []))
+                        except Exception as e:
+                            logger.warning("F1 trend_extra fetch failed %s: %s", sym, e)
+                            # بدون داده — از universe هم بردار
+                            base = sym.split("-")[0].upper()
+                            if getattr(ctx, "f1_universe", None) is not None:
+                                ctx.f1_universe.discard(base)
+                            ctx.f1_extra_symbols.discard(sym)
             except Exception as e:
                 logger.error("F1 discovery failed — F1 unfiltered: %s", e)
         logs = engine.on_candle_close(close_dt, ctx, allow_new=True, run_nightly=False)

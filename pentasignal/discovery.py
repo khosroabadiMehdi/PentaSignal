@@ -41,6 +41,7 @@ class DiscoveryResult:
     analysis: object | None = None  # همیشه None — سازگاری با engine قدیمی
     mode: str = "disabled"
     info: dict = field(default_factory=dict)
+    extra_bases: set[str] = field(default_factory=set)  # ترند CG خارج از استخر
 
 
 def _timeout() -> int:
@@ -64,6 +65,25 @@ def _get_json(url: str, params: dict | None = None, headers: dict | None = None)
         log.warning("GET %s failed: %s", url, exc)
     return None
 
+
+
+def fetch_kucoin_usdt_bases() -> set[str]:
+    """همهٔ baseهای *-USDT روی KuCoin (بدون فیلتر حجم) برای اعتبارسنجی ترند."""
+    payload = _get_json(KUCOIN_TICKERS) or {}
+    data = payload.get("data") if isinstance(payload.get("data"), dict) else payload
+    tickers = (data or {}).get("ticker") or []
+    bases: set[str] = set()
+    for row in tickers:
+        symbol = row.get("symbol") or ""
+        if not symbol.endswith("-USDT"):
+            continue
+        base = symbol[: -len("-USDT")].upper()
+        if not base or base in _STABLE:
+            continue
+        if any(base.endswith(suf) for suf in _LEVERAGED_SUFFIX):
+            continue
+        bases.add(base)
+    return bases
 
 def fetch_cg_trending() -> list[dict]:
     """https://api.coingecko.com/api/v3/search/trending"""
@@ -188,12 +208,30 @@ def build_candidates(board: dict, trending: list[dict]) -> list[dict]:
     return out
 
 
-def select_universe(candidates: list[dict], mains: set[str]) -> tuple[set[str], list[dict], str]:
-    """انتخاب قطعی بدون AI: top-N داخل استخر پنتا ∪ ارزهای اصلی."""
+def select_universe(
+    candidates: list[dict],
+    mains: set[str],
+    trending: list[dict] | None = None,
+    board: dict | None = None,
+    kc_bases: set[str] | None = None,
+) -> tuple[set[str], list[dict], str, set[str]]:
+    """انتخاب F1:
+      • مشترک با استخر: top-N از کاندیداهای داخل UNION
+      • ارزهای اصلی
+      • جدا از ترند CG: تا F1_TREND_EXTRA_N نماد که در استخرهای دیگر نیستند
+        ولی روی KuCoin جفت USDT دارند
+
+    خروجی: (universe_bases, rows, mode, extra_bases)
+    """
     pool_bases = {s.split("-")[0].upper() for s in scenarios.UNION_SYMBOLS}
     mains = {m.upper() for m in mains} & pool_bases
     top_n = int(getattr(settings, "F1_DISCOVERY_TOP_N", 8) or 8)
+    extra_n = int(getattr(settings, "F1_TREND_EXTRA_N", 5) or 5)
+    board = board or {}
+    trending = trending or []
+    kc_bases = set(kc_bases or ()) | set(board.keys())
 
+    # --- مشترک با استخر ---
     fb = [c for c in candidates if c["symbol"] in pool_bases]
     picked = {c["symbol"] for c in fb[:top_n]}
     rows = [{
@@ -201,19 +239,58 @@ def select_universe(candidates: list[dict], mains: set[str]) -> tuple[set[str], 
         "direction": None,
         "confidence": c.get("score"),
         "trend": None,
-        "reason": (
-            f"score={c.get('score')} sources={'+'.join(c.get('sources') or [])}"
-        ),
+        "reason": f"score={c.get('score')} sources={'+'.join(c.get('sources') or [])}",
         "risk_note": "",
         "tradeable": True,
         "selected": c["symbol"] in picked,
+        "bucket": "pool",
         "stats": {
             "change_24h_pct": (c.get("stats") or {}).get("change_24h_pct"),
             "volume_24h_usd": (c.get("stats") or {}).get("volume_24h_usd"),
         },
     } for c in fb[: top_n + 5]]
-    universe = picked | mains
-    return universe, rows, "rules"
+
+    # --- فقط ترند CG، خارج از استخرهای F2–F5، با جفت واقعی KuCoin ---
+    extra: set[str] = set()
+    skipped_no_kc: list[str] = []
+    for item in trending:
+        if len(extra) >= extra_n:
+            break
+        sym = (item.get("symbol") or "").upper()
+        if not sym or sym in pool_bases or sym in mains or sym in extra:
+            continue
+        if sym not in kc_bases:
+            skipped_no_kc.append(sym)
+            continue
+        extra.add(sym)
+        rows.append({
+            "symbol": sym,
+            "direction": None,
+            "confidence": item.get("score_hint"),
+            "trend": "cg_trending",
+            "reason": f"ترند CG rank={item.get('rank')} (خارج از استخر — فقط F1)",
+            "risk_note": "",
+            "tradeable": True,
+            "selected": True,
+            "bucket": "trend_extra",
+            "stats": {},
+        })
+
+    universe = picked | mains | extra
+    if skipped_no_kc:
+        rows.append({
+            "symbol": ",".join(skipped_no_kc[:8]),
+            "direction": None,
+            "confidence": None,
+            "trend": None,
+            "reason": "ترند CG بدون جفت KuCoin — حذف شد",
+            "risk_note": "",
+            "tradeable": False,
+            "selected": False,
+            "bucket": "skipped_no_kucoin",
+            "stats": {},
+        })
+    return universe, rows, "rules+trend_extra", extra
 
 
 def run() -> DiscoveryResult:
@@ -233,10 +310,11 @@ def run() -> DiscoveryResult:
         res.mode = "disabled"
         return res
 
-    board, trending = {}, []
+    board, trending, kc_bases = {}, [], set()
     try:
         board = fetch_kucoin_board()
-        if board:
+        kc_bases = fetch_kucoin_usdt_bases()
+        if board or kc_bases:
             info["sources_ok"].append("kucoin")
         else:
             info["sources_failed"]["kucoin"] = "empty_board"
@@ -261,21 +339,25 @@ def run() -> DiscoveryResult:
     } for c in candidates[:15]]
 
     mains = set(getattr(settings, "F1_MAIN_COINS", ["BTC", "ETH", "BNB", "SOL", "XRP"]))
-    universe, sel_rows, mode = select_universe(candidates, mains)
-    # اگر هیچ منبعی کار نکرد، حداقل ارزهای اصلی
+    universe, sel_rows, mode, extra = select_universe(
+        candidates, mains, trending=trending, board=board, kc_bases=kc_bases,
+    )
     if not universe:
         pool_bases = {s.split("-")[0].upper() for s in scenarios.UNION_SYMBOLS}
         universe = {m for m in mains if m in pool_bases}
+        extra = set()
         mode = "mains-only"
 
     res.mode = mode
     res.universe = universe
     res.analysis = None  # AI حذف شده
+    res.extra_bases = extra  # type: ignore[attr-defined]
 
     info["selected"] = {
         "mode": res.mode,
         "universe": sorted(universe),
         "main_coins": sorted(mains),
+        "trend_extra": sorted(extra),
         "rows": sel_rows,
     }
     info["elapsed_ms"] = int((time.time() - t0) * 1000)
@@ -313,11 +395,12 @@ def _persist(info: dict):
 def _log_summary(info: dict):
     sel = info.get("selected") or {}
     logging.getLogger(log_name).info(
-        "F1 DISCOVERY [%s] sources=%s | universe(%d)=%s | top=%s",
+        "F1 DISCOVERY [%s] sources=%s | universe(%d)=%s | trend_extra=%s | top=%s",
         sel.get("mode"),
         ",".join(info.get("sources_ok") or []) or "-",
         len(sel.get("universe") or []),
         ",".join(sorted(sel.get("universe") or [])),
+        ",".join(sel.get("trend_extra") or []) or "-",
         ",".join(
             f"{c['symbol']}:{c['score']}"
             for c in (info.get("candidates_top") or [])[:5]
@@ -337,4 +420,7 @@ def apply(ctx) -> DiscoveryResult | None:
     ctx.f1_universe = res.universe
     ctx.khosro_ai = None  # AI کامل حذف
     ctx.discovery_info = res.info
+    # نمادهای کامل KuCoin برای ترندهای خارج‌استخر (مثلاً M87-USDT)
+    extra = getattr(res, "extra_bases", None) or set()
+    ctx.f1_extra_symbols = {f"{b}-USDT" for b in extra}
     return res

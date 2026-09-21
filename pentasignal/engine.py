@@ -146,7 +146,7 @@ class Engine:
                 guards["halted"] = "max_open_trades"
 
         def _note(reason: str, symbol: str, sid: str = "-", detail: str = ""):
-            if len(skip_details) < 40:
+            if len(skip_details) < 200:
                 skip_details.append(f"{symbol} | {sid} | {reason}" + (f" | {detail}" if detail else ""))
 
         if guards["halted"]:
@@ -159,7 +159,12 @@ class Engine:
                 guards["daily_r"] if guards["daily_r"] is not None else 0.0,
             )
         else:
-            for symbol in scenarios.UNION_SYMBOLS:
+            scan_symbols = list(scenarios.UNION_SYMBOLS)
+            extra_syms = sorted(getattr(ctx, "f1_extra_symbols", None) or [])
+            for ex in extra_syms:
+                if ex not in scan_symbols:
+                    scan_symbols.append(ex)
+            for symbol in scan_symbols:
                 candles = ctx.candles30.get(symbol) or []
                 i = self._candle_index_at(candles, close_ts, 1800)
                 stats["symbols_scanned"] += 1
@@ -169,13 +174,16 @@ class Engine:
                     continue
 
                 # برای هر سناریوی مجاز این نماد، وضعیت را جدا گزارش کن
-                matched = {sig["scenario_id"]: sig for sig in scenarios.run_detectors(candles, i, ctx, symbol)}
+                issued_sigs, reject_list = scenarios.run_detectors_detailed(candles, i, ctx, symbol)
+                matched = {sig["scenario_id"]: sig for sig in issued_sigs}
+                for rj in reject_list:
+                    stats["no_setup"] += 1
+                    _note(rj.get("reason") or "شرایط_دیتکتور_برقرار_نیست",
+                          rj.get("symbol") or symbol, rj.get("scenario_id") or "?")
                 for sid in scenarios.ACTIVE_SCENARIOS:
                     if symbol not in scenarios.SCENARIO_SYMBOLS.get(sid, []):
                         continue
                     if sid not in matched:
-                        stats["no_setup"] += 1
-                        _note("شرایط_دیتکتور_برقرار_نیست", symbol, sid)
                         continue
 
                     sig = matched[sid]
@@ -244,23 +252,25 @@ class Engine:
             sel = di.get("selected") or {}
             ai = di.get("ai") or {}
             lines.append(
-                f"کشف ترند F1 (v3.4.0): حالت {sel.get('mode')} · منابع سالم "
-                f"{','.join(di.get('sources_ok') or []) or '-'}"
-                f" · اخبار {ai.get('news_count', '-')}"
-                f" · انتخاب rules (بدون AI)"
-                f" · سنتیمنت {ai.get('sentiment') or '-'}"
-                f" ({ai.get('sentiment_confidence', '-')}%)"
+                f"کشف ترند F1: حالت {sel.get('mode')} · منابع "
+                f"{','.join(di.get('sources_ok') or []) or '-'} "
+                f"(شکست: {','.join((di.get('sources_failed') or {}).keys()) or '-'})"
             )
             rows = sel.get("rows") or []
             if rows:
-                lines.append("تاییدیه‌های AI: " + " | ".join(
-                    f"{r['symbol']}={r['direction'] or '-'}({r['confidence'] if r['confidence'] is not None else '-'})"
-                    for r in rows[:12]
+                lines.append("انتخاب rules: " + " | ".join(
+                    f"{r['symbol']} score={r.get('confidence') if r.get('confidence') is not None else '-'}"
+                    for r in rows[:12] if r.get('selected')
                 ))
             lines.append(
-                f"دنیسکاوری F1: {len(sel.get('universe') or [])} نماد "
-                f"[{','.join(sorted(sel.get('universe') or []))}] — بقیه استخر فقط F2–F5"
+                f"universe F1 ({len(sel.get('universe') or [])}): "
+                f"[{','.join(sorted(sel.get('universe') or []))}]"
             )
+            te = sel.get("trend_extra") or []
+            if te:
+                lines.append(
+                    f"ترند CG خارج‌استخر (فقط F1): [{','.join(te)}]"
+                )
         if guards["halted"] == "circuit_breaker":
             lines.append(
                 f"⛔ مدار قطع روزانه فعال: R امروز {guards['daily_r']:+.2f} ≤ "
@@ -272,7 +282,20 @@ class Engine:
                 " — تا آزاد شدن پوزیشن‌ها هیچ سیگنال جدیدی صادر نمی‌شود"
             )
         if skip_details:
-            lines.append("--- نمونه دلایل رد (حداکثر 40) ---")
+            # خلاصه پرتکرارترین دلایل به‌ازای هر سناریو
+            from collections import Counter
+            by_sc = {}
+            for row in skip_details:
+                parts = [x.strip() for x in row.split("|")]
+                if len(parts) >= 3:
+                    sid, reason = parts[1], parts[2]
+                    by_sc.setdefault(sid, Counter())[reason] += 1
+            if by_sc:
+                lines.append("--- پرتکرارترین دلایل رد (به‌ازای سناریو) ---")
+                for sid in sorted(by_sc):
+                    top = by_sc[sid].most_common(5)
+                    lines.append(f"  {sid}: " + " ؛ ".join(f"{r} ×{n}" for r, n in top))
+            lines.append("--- جزئیات رد سناریوها ---")
             lines.extend(skip_details)
         lines.append("===== پایان گزارش صدور =====")
         logger.info("\n".join(lines))

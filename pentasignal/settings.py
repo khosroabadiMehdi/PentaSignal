@@ -1,9 +1,9 @@
-# settings.py — PentaSignal v3.5.0
+# settings.py — PentaSignal v3.5.1
 # تنظیمات سراسری: نسخه، مسیرها، پنجره‌های زمانی تهران، کارمزد و سایز پوزیشن
 
 import os
 
-VERSION = "3.5.0"
+VERSION = "3.5.2"
 
 # ---------- مسیرها ----------
 BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))  # root پروژه
@@ -55,13 +55,15 @@ PORTFOLIO_GUARDS = os.getenv("PORTFOLIO_GUARDS", "1") == "1"
 MAX_OPEN_TRADES = int(os.getenv("MAX_OPEN_TRADES", "5"))
 MAX_DAILY_LOSS_R = float(os.getenv("MAX_DAILY_LOSS_R", "3.0"))
 
-# ---------- کشف ترند F1 بدون AI (از v3.5.0) ----------
+# ---------- کشف ترند F1 بدون AI (از v3.5.1) ----------
 # CoinGecko /search/trending + مومنتوم/حجم KuCoin → top-N ∪ ارزهای اصلی
 F1_DISCOVERY = os.getenv("F1_DISCOVERY", "1") == "1"
 F1_MAIN_COINS = [s.strip().upper() for s in os.getenv(
     "F1_MAIN_COINS", "BTC,ETH,BNB,SOL,XRP").split(",") if s.strip()]
 F1_DISCOVERY_TOP_N = int(os.getenv("F1_DISCOVERY_TOP_N", "8"))
 F1_DISCOVERY_TIMEOUT = int(os.getenv("F1_DISCOVERY_TIMEOUT", "8"))
+# چند نماد فقط‌از‌ترند CoinGecko (خارج از استخر F2–F5) برای F1
+F1_TREND_EXTRA_N = int(os.getenv("F1_TREND_EXTRA_N", "5"))
 
 # ---------- نگهداری CSV ----------
 CSV_KEEP_DAYS = 90

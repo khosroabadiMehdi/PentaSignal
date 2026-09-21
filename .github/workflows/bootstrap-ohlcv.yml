@@ -1,4 +1,4 @@
-name: "PentaSignal v3.5.0 · Bootstrap 90d OHLCV"
+name: "PentaSignal v3.5.2 · Bootstrap 90d OHLCV"
 
 on:
   workflow_dispatch:
@@ -15,7 +15,7 @@ concurrency:
 
 jobs:
   bootstrap:
-    name: "v3.5.0 · دریافت اولیه دیتای 1m همه ارزها"
+    name: "v3.5.2 · دریافت اولیه دیتای 1m همه ارزها"
     runs-on: ubuntu-latest
     timeout-minutes: 120
     permissions:

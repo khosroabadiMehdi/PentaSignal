@@ -1,3 +1,17 @@
+## 3.5.2 — F1 also takes exclusive CoinGecko trending (outside other pools)
+
+- Besides pool-shared picks + main coins, F1 adds up to `F1_TREND_EXTRA_N` (default 5)
+  symbols from `GET /api/v3/search/trending` that are **not** in UNION/F2–F5 pools.
+- Only symbols with a real KuCoin `*-USDT` pair are kept (e.g. M87 skipped if missing).
+- Extra symbols get 30m candles loaded on the signal tick and are scanned **only for F1**.
+- Log shows `trend_extra=[...]`.
+
+## 3.5.1 — detailed per-scenario reject reasons in Actions log
+
+- `evaluate_F1`…`evaluate_F5` return explicit reject reasons (BTC DD, EMA slope, volume, RuleBook thresholds, …).
+- Report block lists top reasons per scenario + up to 200 detail lines.
+- Discovery log text cleaned (no AI wording).
+
 ## 3.5.0 — F1 discovery without AI; prefer KuCoin data
 
 - **AI fully removed** from F1 path (`discovery`, settings, `ctx.khosro_ai=None`).
