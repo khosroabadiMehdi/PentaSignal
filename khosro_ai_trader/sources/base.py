@@ -62,6 +62,10 @@ class BaseSource:
                 if resp.status_code == 200:
                     return resp.json()
                 last_err = SourceError(f"HTTP {resp.status_code} from {url}")
+                # 451/403 = مسدود جغرافیایی/قانونی — retry بی‌فایده و فقط لاگ را شلوغ می‌کند
+                if resp.status_code in (451, 403):
+                    self.log.debug("HTTP %s on %s — skip retries", resp.status_code, url)
+                    break
                 self.log.warning("HTTP %s on %s (attempt %s)", resp.status_code, url, attempt)
             except requests.RequestException as exc:
                 last_err = exc

@@ -1,3 +1,10 @@
+## 3.5.3 — silence Binance HTTP 451 on GitHub Actions (no logic change)
+
+- F1 already preferred KuCoin 1h; Binance depth/funding was optional and already empty on 451.
+- On `GITHUB_ACTIONS=true`, `F1_BINANCE_MD` defaults to off → no Binance calls, no 451 spam, faster ticks.
+- Locally (non-Actions) default remains on; override with `F1_BINANCE_MD=0/1`.
+- `khosro_ai_trader` HTTP client: **no retries** on 451/403 (legal/geo block).
+
 ## 3.5.2 — F1 also takes exclusive CoinGecko trending (outside other pools)
 
 - Besides pool-shared picks + main coins, F1 adds up to `F1_TREND_EXTRA_N` (default 5)

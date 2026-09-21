@@ -3,7 +3,7 @@
 
 import os
 
-VERSION = "3.5.2"
+VERSION = "3.5.3"
 
 # ---------- مسیرها ----------
 BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))  # root پروژه
@@ -64,6 +64,9 @@ F1_DISCOVERY_TOP_N = int(os.getenv("F1_DISCOVERY_TOP_N", "8"))
 F1_DISCOVERY_TIMEOUT = int(os.getenv("F1_DISCOVERY_TIMEOUT", "8"))
 # چند نماد فقط‌از‌ترند CoinGecko (خارج از استخر F2–F5) برای F1
 F1_TREND_EXTRA_N = int(os.getenv("F1_TREND_EXTRA_N", "5"))
+# لبه depth/funding بایننس (اختیاری). روی GitHub Actions معمولاً 451 است → پیش‌فرض خاموش
+_F1_MD_DEFAULT = "0" if os.getenv("GITHUB_ACTIONS") == "true" else "1"
+F1_BINANCE_MD = os.getenv("F1_BINANCE_MD", _F1_MD_DEFAULT) == "1"
 
 # ---------- نگهداری CSV ----------
 CSV_KEEP_DAYS = 90

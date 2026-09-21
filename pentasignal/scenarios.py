@@ -12,7 +12,7 @@
 #
 # ⚠️ اعداد از بک‌تست ۹۱ روزه با کارمزد 0.2٪ هستند؛ تضمین آینده نیستند.
 
-from . import indicators as ind
+from . import indicators as ind, settings
 
 # ---------- پول‌های نماد ----------
 POOL1 = ["BTC-USDT", "ETH-USDT", "BNB-USDT", "SOL-USDT", "XRP-USDT"]
@@ -462,10 +462,14 @@ def evaluate_F1(candles, i, ctx: MarketContext, symbol):
     hub = _f1_hub(cfg)
     engine = _f1_engine(cfg, hub)
 
-    try:
-        md_data = hub.enrich_coins([{"symbol": base, "pair": pair}])
-    except Exception:
-        md_data = {}
+    # لبه بایننس اختیاری است؛ نبودنش فقط وزن depth/funding را صفر می‌کند (منطق رأی همان است).
+    # روی Actions با 451 فقط زمان و لاگ را می‌سوزاند → پیش‌فرض خاموش.
+    md_data = {}
+    if getattr(settings, "F1_BINANCE_MD", False):
+        try:
+            md_data = hub.enrich_coins([{"symbol": base, "pair": pair}])
+        except Exception:
+            md_data = {}
 
     rows = []
     try:
