@@ -182,6 +182,30 @@ def signals_for_date(date_str: str):
     return read_all(_signals_path(date_str), SIGNAL_HEADERS)
 
 
+def realized_r_on(date_str: str) -> float:
+    """جمع r_multiple سیگنال‌های بسته‌شده در تاریخ تهران داده‌شده (گارد W2).
+
+    سیگنال‌های باز بعد از نیمه‌شب در فایل «روز صدور» می‌مانند اما تاریخ
+    بسته‌شدنشان (exit_time_tehran) ممکن است روز بعد باشد — پس روی همه
+    فایل‌های اخیر اسکن می‌کنیم و بر اساس تاریخ خروج فیلتر می‌کنیم.
+    ردیف‌های OPEN و r_multiple خراب نادیده گرفته می‌شوند.
+    """
+    total = 0.0
+    for path in _list_signal_files(max_days=settings.CSV_KEEP_DAYS):
+        for r in read_all(path, SIGNAL_HEADERS):
+            status = r.get("status") or "OPEN"
+            if status == "OPEN":
+                continue
+            exit_date = (r.get("exit_time_tehran") or "")[:10]
+            if exit_date != date_str:
+                continue
+            try:
+                total += float(r.get("r_multiple") or 0.0)
+            except (TypeError, ValueError):
+                pass
+    return total
+
+
 def has_open(symbol: str, scenario_id: str) -> bool:
     for r in open_signals():
         if r.get("symbol") == symbol and r.get("scenario_id") == scenario_id:

@@ -97,3 +97,26 @@ def rsi_series(values: List[float], period=14) -> List[Optional[float]]:
         al = (al * (period - 1) + max(-d, 0.0)) / period
         out[i] = 100.0 - 100.0 / (1.0 + (ag / al if al > 0 else 1e9))
     return out
+
+
+def macd(values: List[float], fast: int = 12, slow: int = 26, signal: int = 9):
+    """MACD line, signal line, histogram — same recursion as KhosroAiTrader rule book."""
+    ema_fast = ema_series(values, fast)
+    ema_slow = ema_series(values, slow)
+    macd_line = [
+        (f - s) if (f is not None and s is not None) else None
+        for f, s in zip(ema_fast, ema_slow)
+    ]
+    valid = [v for v in macd_line if v is not None]
+    if len(valid) < signal:
+        sig_valid: List[Optional[float]] = []
+    else:
+        sig_valid = ema_series(valid, signal)
+        # ema_series returns full length of `valid`; keep as-is
+    offset = len(macd_line) - len(sig_valid)
+    signal_line: List[Optional[float]] = [None] * offset + list(sig_valid)
+    hist = [
+        (m - s) if (m is not None and s is not None) else None
+        for m, s in zip(macd_line, signal_line)
+    ]
+    return macd_line, signal_line, hist

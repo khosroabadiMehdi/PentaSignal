@@ -1,3 +1,79 @@
+## 3.4.0 — F1 AI discovery: multi-source trends + news + LLM coin selection
+
+خط لوله F1 دقیقاً همان طراحی توافق‌شده شد: **ترند از چندجا → خواندن اخبار → مشورت AI
+(تاییدیه نمادها و جهت‌ها) → انتخاب چند ارز → همراه ارزهای اصلی به چک و تولید سیگنال.**
+
+- ماژول جدید `pentasignal/discovery.py` (در مسیر زنده، هر تیک سیگنال؛ شبیه‌ساز دست‌نخورده):
+  - **ترند چندمنبعی**: CoinGecko `/search/trending` + مومنتوم Binance
+    (10 صعودی/10 نزولی/10 پرحجم USDT با فیلتر لوریج‌توکن/استیبل/نازک) —
+    امتیاز حضور چندمنبعی: نمادِ حاضر در چند منبع بالاتر می‌آید
+  - **خواندن اخبار**: RSS رایگان (Cointelegraph + CoinDesk) + CryptoPanic با کلید
+  - **مشورت AI**: یک فراخوان `AIAnalyst` خوسرو (پرامپت چندمنبعی + تیتر اخبار + کلان بازار
+    F&G/dominance) → حکم هر نماد: `long/short/watch/avoid` + اطمینان + سنتیمنت بازار
+  - **انتخاب**: حکم‌های long/short با اطمینان ≥ `F1_AI_SELECT_MIN_CONF` (55) →
+    ∩ استخر اجراپذیر KuCoin پنتا (سقف `F1_DISCOVERY_TOP_N` = 8) ∪ **ارزهای اصلی**
+    `F1_MAIN_COINS` (BTC/ETH/BNB/SOL/XRP همیشه)
+  - کش AI به مدت `F1_AI_TTL_HOURS` (4) → حداکثر ~۶ فراخوان LLM در روز؛ بدون
+    `AI_API_KEY` فال‌بک: برترین‌های چندمنبعی + ارزهای اصلی (رایگان، همیشه کار می‌کند)
+- **گشت F1**: `run_detectors` فقط F1 را به دنیسکاوری محدود می‌کند؛ F2–F5 روی کل استخر
+  خودشان بدون تغییر باقی می‌مانند. شبیه‌ساز/بک‌تست (ctx بدون فیلد) = اسکن کامل مانند قبل.
+- **فعال‌شدن AI fusion در مسیر زنده**: حکم‌های AI روی `ctx.khosro_ai` سوار می‌شوند و
+  `detect_F1` آن‌ها را به snapshot می‌دهد → داخل `RuleSignalEngine._evaluate_coin` واقعی:
+  هم‌جهت = پاداش تا +۲۰ · مخالف = جریمه · `avoid` = وتو کامل سیگنال.
+- ذخیره‌سازی و مشاهده‌پذیری: `data/discovery/latest.json` + `history.jsonl` (غلتان ۹۶ ردیف) —
+  کاندیداها، منابع سالم/خراب، اخبار، حکم‌های AI و universe انتخابی؛ خلاصه کامل در
+  «گزارش صدور سیگنال» لاگ Actions.
+- تنظیمات env: `F1_DISCOVERY` (1) · `F1_MAIN_COINS` · `F1_DISCOVERY_TOP_N` (8) ·
+  `F1_AI_SELECT_MIN_CONF` (55) · `F1_AI_TTL_HOURS` (4) · `F1_NEWS_ENABLED` (1) ·
+  `F1_NEWS_MAX` (10) · `F1_DISCOVERY_TIMEOUT` (8).
+- هیچ شکستی در کشف ترند fatal نیست — خطا یعنی F1 بدون فیلتر اسکن می‌شود (رفتار v3.3.0).
+- **F1 vote/exit logic و F2–F5: بدون تغییر.**
+
+## 3.3.0 — W2 portfolio guards (circuit breaker + global open cap)
+
+- **مدار قطع روزانه**: اگر جمع `r_multiple` سیگنال‌های بسته‌شدهٔ روز تهران ≤ −3R باشد،
+  تا پایان آن روز هیچ سیگنال جدیدی صادر نمی‌شود (تسویه ادامه دارد) — هم‌معنا با
+  `RiskEngine._circuit_breaker` خوسرو (`max_daily_loss_r: 3.0` در config.yaml).
+- **سقف سراسری پوزیشن باز**: با ۵ پوزیشن باز (همه سناریوها) صدور جدید متوقف می‌شود —
+  هم‌معنا با `max_open_trades: 5` خوسرو.
+- گاردها قبل از اسکن در `detect_new` اجرا می‌شوند و وضعیت‌شان (پوزیشن باز، R امروز،
+  دلیل توقف) در «گزارش صدور سیگنال» لاگ Actions چاپ می‌شود.
+- تنظیم با env: `MAX_OPEN_TRADES` (5) · `MAX_DAILY_LOSS_R` (3.0) · `PORTFOLIO_GUARDS` (1؛
+  0 فقط برای شبیه‌سازی/پژوهش).
+- store: تابع جدید `realized_r_on(date_str)` — جمع R بسته‌شده‌های یک روز تهران
+  (سیگنال‌های باز و r_multiple خراب نادیده گرفته می‌شوند؛ اسکن بر اساس تاریخ خروج).
+- مستندات: F1 در `docs/STRATEGY.md` از دونچیان قدیمی به «KhosroAiTrader Rule Book v1»
+  به‌روزرسانی شد + سکشن گاردهای W2؛ README: شفاف‌سازی مسیر داده 1h (بایننس اصلی،
+  فولد 30m→1h فقط فال‌بک) + جدول پیکربندی گاردها.
+- **F1–F5 detector/exit logic: بدون تغییر.**
+
+## 3.2.2 — F1 is the full KhosroAiTrader package (zero reimplementation)
+
+- Vendored the complete `khosro_ai_trader/` package + `config/config.yaml` into the repo.
+- F1 calls the **real** `RuleSignalEngine._evaluate_coin`, `MarketDataHub.enrich_coins`,
+  and `RiskEngine._validate/_size` — no duplicated vote math.
+- Live inputs match Khosro: Binance 1h klines, order-book depth, funding, OI, LSR, Fear&Greed.
+- Optional AI fusion via `ctx.khosro_ai` if provided.
+- Removed partial reimplementation modules.
+- **F2 / F3 / F4 / F5 unchanged.**
+
+## 3.2.1 — F1 exact Khosro Rule Book parity
+
+- Embedded `khosro_indicators.py` (verbatim from KhosroAiTrader).
+- Embedded `khosro_rulebook.py` with identical `_votes`, thresholds, ATR geometry, AI fusion hooks.
+- Live path fetches Binance 1h klines + order-book depth + funding + LSR (same inputs as Khosro).
+- Offline fallback still folds KuCoin 30m → 1h when Binance is unreachable.
+- F2/F3/F4/F5 remain completely unchanged.
+
+## 3.2.0 — F1 = KhosroAiTrader Rule Book v1
+
+- Replaced legacy Donchian F1 with the **unchanged** KhosroAiTrader rule-book v1 vote engine
+  (EMA structure, RSI, MACD, 12-bar momentum, volume surge, optional depth/funding/LSR).
+- Thresholds match `config/config.yaml` signals block: min_confidence=45, min_score_gap=15,
+  atr_sl_multiplier=1.5, min/max ATR%, trend_gate=false, cooldown=12h, TP at 2R.
+- 30m bars are folded to 1h before scoring (same interval as Khosro `kline_interval: 1h`).
+- **F2 / F3 / F4 / F5 left untouched.**
+
 ## 3.1.4 — TRAIL exit label + nightly stats fix
 
 - Trail stop exits are now `TRAIL_HIT` (not `SL_HIT`), including profitable F3 trails.

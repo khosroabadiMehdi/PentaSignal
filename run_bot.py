@@ -131,6 +131,17 @@ def run_once(engine: Engine, forced_mode: str | None = None) -> int:
     close_dt = ts_to_tehran(close_ts)
     ctx = fetch_market(ts, mode)
     if mode == "signal":
+        # کشف ترند چندمنبعی + مشورت AI برای F1 (از v3.4.0) — همیشه بی‌خطر:
+        # هر خطایی یعنی F1 بدون فیلتر روی کل استخر اسکن می‌شود (رفتار v3.3.0).
+        if settings.F1_DISCOVERY:
+            try:
+                from pentasignal import discovery
+                res = discovery.apply(ctx)
+                if res is not None:
+                    logger.info("F1 discovery: mode=%s universe=%s",
+                                res.mode, sorted(res.universe or []))
+            except Exception as e:
+                logger.error("F1 discovery failed — F1 unfiltered: %s", e)
         logs = engine.on_candle_close(close_dt, ctx, allow_new=True, run_nightly=False)
     else:
         # در 20:00–01:00 هیچ سیگنال جدیدی صادر نمی‌شود.

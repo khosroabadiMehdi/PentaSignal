@@ -25,7 +25,7 @@ POOL_OLD = POOL1 + POOL2 + POOL3A
 UNION_SYMBOLS = sorted(set(POOL_OLD))
 
 SCENARIO_SYMBOLS = {
-    "F1": POOL1 + POOL2,
+    "F1": POOL_OLD,  # Khosro rule book: هر نماد نقدشونده با داده کافی
     "F2": POOL_OLD,
     "F3": POOL3A + POOL2,
     "F4": POOL45,
@@ -36,17 +36,24 @@ SCENARIO_SYMBOLS = {
 SCENARIOS = {
     "F1": {
         "id": "F1",
-        "name_fa": "شکست دونچیان ۳۲ + گیت رژیم",
-        "name_en": "Donchian-32 Breakout",
-        "desc_fa": "شکست کانال ۳۲ کندلی فقط در رژیم صعودی BTC؛ بعد از +1R استاپ به سربه‌سر می‌رود و تا ۶ روز رید می‌کند",
-        "direction": "LONG",
-        "exit_mode": "BK",
-        "bk_arm_r": 1.0,            # +1R → استاپ = ورود + بافر کارمزد
-        "sl_atr": 4.0,
-        "cm_candles": 288,          # 6 روز
-        "cooldown_h": 6,
-        "donchian": 32,
-        "min_atr_pct": 0.0015,
+        "name_fa": "KhosroAiTrader Rule Book v1 (کامل)",
+        "name_en": "KhosroAiTrader Rule Book v1",
+        "desc_fa": (
+            "پکیج کامل KhosroAiTrader: RuleSignalEngine + MarketDataHub + RiskEngine + config.yaml "
+            "بدون بازنویسی منطق؛ کندل 1h بایننس و لبه depth/funding/OI/LSR"
+        ),
+        "direction": "BOTH",
+        "exit_mode": "FIXED",
+        "tp_atr": 3.0,              # 2R وقتی SL = 1.5×ATR
+        "sl_atr": 1.5,              # config signals.atr_sl_multiplier
+        "cm_candles": 144,          # ~72h روی 30m ≈ max_age_hours خوسرو
+        "cooldown_h": 12,           # signals.cooldown_hours
+        "min_confidence": 45,       # signals.min_confidence
+        "min_score_gap": 15,        # signals.min_score_gap
+        "min_atr_pct": 0.3,         # percent of price
+        "max_atr_pct": 8.0,
+        "trend_gate": False,        # tested off in Khosro config
+        "vol_surge_min": 1.15,
     },
     "F2": {
         "id": "F2",
@@ -120,12 +127,22 @@ def scenario_desc(sid: str) -> str:
 
 
 class MarketContext:
-    """داده بازار برای یک تیک: کندل‌های 30m هر نماد + کندل‌های 4h BTC."""
+    """داده بازار برای یک تیک: کندل‌های 30m هر نماد + کندل‌های 4h BTC.
+
+    فیلدهای کشف ترند (از v3.4.0 — فقط در مسیر زنده توسط discovery.apply پر می‌شوند؛
+    در شبیه‌ساز/بک‌تست None می‌مانند یعنی F1 بدون فیلتر روی کل استخر اسکن می‌شود):
+      f1_universe    — مجموعه نمادهای پایه مجاز برای F1 (انتخاب AI + ارزهای اصلی)
+      khosro_ai      — AIAnalysis خوسرو → داخل detect_F1 به snapshot می‌چسبد (fusion)
+      discovery_info — خلاصه کشف ترند برای گزارش تشخیصی Actions
+    """
 
     def __init__(self, candles30: dict, btc_4h=None, candles1m=None):
         self.candles30 = candles30
         self.btc_4h = btc_4h or []
         self.candles1m = candles1m or {}
+        self.f1_universe = None
+        self.khosro_ai = None
+        self.discovery_info = None
         self._btc_regime = None
         self._btc_dd = None
 
@@ -169,32 +186,164 @@ def _base_signal(sc, symbol, direction, i, entry, sl, atr_val, extra=None, reaso
     return sig
 
 
+
+def _f1_rows_from_kucoin(candles, i):
+    """30m KuCoin → ردیف خام 1h سبک بایننس برای تغذیه RuleSignalEngine."""
+    src = candles[: i + 1]
+    if len(src) < 2:
+        return []
+    bars = []
+    start = len(src) % 2
+    for j in range(start, len(src), 2):
+        chunk = src[j:j + 2]
+        if len(chunk) == 1:
+            bars.append(chunk[0])
+            continue
+        a, b = chunk[0], chunk[1]
+        bars.append({
+            "t": a.get("t", 0),
+            "o": a["o"], "h": max(a["h"], b["h"]), "l": min(a["l"], b["l"]),
+            "c": b["c"], "v": float(a.get("v") or 0) + float(b.get("v") or 0),
+        })
+    rows = []
+    for c in bars:
+        t0 = int(c.get("t") or 0)
+        ms = t0 if t0 > 10_000_000_000 else t0 * 1000
+        o, h, l, cl, v = c["o"], c["h"], c["l"], c["c"], c.get("v") or 0
+        rows.append([ms, str(o), str(h), str(l), str(cl), str(v), ms + 3_599_999,
+                     "0", 0, "0", "0", "0"])
+    return rows
+
+
 def detect_F1(candles, i, ctx: MarketContext, symbol):
+    """F1 = بستهٔ کامل KhosroAiTrader بدون بازنویسی منطق.
+
+    از کلاس‌های واقعی پکیج `khosro_ai_trader` استفاده می‌کند:
+      • RuleSignalEngine._evaluate_coin  (rule book v1)
+      • MarketDataHub (کندل 1h بایننس + depth/funding/OI/LSR/F&G)
+      • RiskEngine._validate (min_rr، عرض استاپ، هندسه کامل)
+      • config/config.yaml عیناً
+
+    F2–F5 از این مسیر استفاده نمی‌کنند و تغییر نکرده‌اند.
+    """
+    from datetime import datetime, timezone
+    from zoneinfo import ZoneInfo
+
+    from khosro_ai_trader.config import load_config
+    from khosro_ai_trader.models import TrendingSnapshot
+    from khosro_ai_trader.risk.engine import RiskEngine
+    from khosro_ai_trader.signals.engine import RuleSignalEngine
+    from khosro_ai_trader.sources.market_data import MarketDataHub
+
     sc = SCENARIOS["F1"]
-    if sc["direction"] != "LONG":
-        return None
-    if not ctx.btc_regime_bull():
-        return None
-    if i < sc["donchian"] + 60:
-        return None
-    a = ind.atr_series(candles, 14)
-    atr_val = a[i]
-    if not atr_val:
-        return None
-    px = candles[i]["c"]
-    if atr_val / px < sc["min_atr_pct"]:
-        return None
-    if px <= ind.highest(candles, i, sc["donchian"]):
-        return None
-    entry = px
-    sl = entry - sc["sl_atr"] * atr_val
-    don_hi = ind.highest(candles, i, sc["donchian"])
-    reason = (
-        f"کلوز {px:.6g} بالاتر از سقف دونچیان {sc['donchian']} ({don_hi:.6g})؛ "
-        f"رژیم صعودی BTC (EMA21>EMA50 روی 4h)؛ ATR%={(atr_val/px)*100:.2f}"
+    base = symbol.split("-")[0].upper()
+    pair = f"{base}USDT"
+
+    cfg = _f1_cfg()
+    hub = _f1_hub(cfg)
+    engine = _f1_engine(cfg, hub)
+
+    # داده لبهٔ بازار — همان enrich_coins خوسرو
+    try:
+        md_data = hub.enrich_coins([{"symbol": base, "pair": pair}])
+    except Exception:
+        md_data = {}
+
+    # اگر Binance در دسترس نبود، همان RuleSignalEngine با کندل‌های 1h
+    # ساخته‌شده از KuCoin 30m تغذیه می‌شود (منطق رأی عوض نمی‌شود).
+    try:
+        rows = hub.fetch_klines(pair, cfg.signals.kline_interval, cfg.signals.kline_limit)
+    except Exception:
+        rows = []
+    if not rows or len(rows) < 220:
+        rows = _f1_rows_from_kucoin(candles, i)
+        if rows and len(rows) >= 220:
+            engine._klines_cache[pair] = rows
+        else:
+            return None
+    else:
+        engine._klines_cache[pair] = rows
+
+    # snapshot خالی از نظر ترند؛ AI روی ctx اگر باشد
+    now = datetime.now(timezone.utc)
+    tehran = now.astimezone(ZoneInfo("Asia/Tehran"))
+    snap = TrendingSnapshot(
+        run_at_utc=now.strftime("%Y-%m-%d %H:%M UTC"),
+        run_at_tehran=tehran.strftime("%Y-%m-%d %H:%M"),
+        duration_seconds=0.0,
     )
-    return _base_signal(sc, symbol, "LONG", i, entry, sl, atr_val,
-                        extra={"donchian_hi": don_hi}, reason=reason)
+    if getattr(ctx, "khosro_ai", None) is not None:
+        snap.ai = ctx.khosro_ai
+
+    try:
+        raw = engine._evaluate_coin(base, pair, snap, md_data)
+    except Exception:
+        return None
+    if raw is None:
+        return None
+
+    # اعتبارسنجی ریسک عین RiskEngine (بدون journal/circuit)
+    risk = RiskEngine(cfg)
+    reject = risk._validate(raw)
+    if reject:
+        return None
+    risk._size(raw)
+
+    entry = float(raw.entry)
+    sl = float(raw.stop_loss)
+    atr_val = float((raw.meta or {}).get("atr") or abs(entry - sl) / max(cfg.signals.atr_sl_multiplier, 1e-9))
+    direction = "LONG" if raw.direction == "long" else "SHORT"
+    tps = list(raw.take_profits or [])
+    tp = float(tps[1]) if len(tps) > 1 else (float(tps[0]) if tps else None)
+    reasons = list(raw.reasons or [])
+    conf = raw.confidence
+    reason = (
+        f"KhosroAiTrader rule-book v1 | {direction} conf={conf} | "
+        + "؛ ".join(reasons[:5])
+    )
+    extra = {
+        "take_profit": tp,
+        "take_profits": tps,
+        "f1_confidence": conf,
+        "khosro_meta": dict(raw.meta or {}),
+        "khosro_rr": raw.rr,
+        "khosro_r_value": raw.r_value,
+        "position_size_usd_khosro": raw.position_size_usd,
+        "notional_usd_khosro": raw.notional_usd,
+    }
+    return _base_signal(sc, symbol, direction, i, entry, sl, atr_val, extra=extra, reason=reason)
+
+
+_F1_CFG = None
+_F1_HUB = None
+_F1_ENGINE = None
+
+
+def _f1_cfg():
+    global _F1_CFG
+    if _F1_CFG is None:
+        from pathlib import Path
+        from khosro_ai_trader.config import load_config
+        # config کنار ریشه پروژه PentaSignal
+        root = Path(__file__).resolve().parents[1]
+        _F1_CFG = load_config(root / "config" / "config.yaml")
+    return _F1_CFG
+
+
+def _f1_hub(cfg):
+    global _F1_HUB
+    if _F1_HUB is None:
+        from khosro_ai_trader.sources.market_data import MarketDataHub
+        _F1_HUB = MarketDataHub(cfg)
+    return _F1_HUB
+
+
+def _f1_engine(cfg, hub):
+    global _F1_ENGINE
+    if _F1_ENGINE is None:
+        from khosro_ai_trader.signals.engine import RuleSignalEngine
+        _F1_ENGINE = RuleSignalEngine(cfg, hub)
+    return _F1_ENGINE
 
 
 def detect_F2(candles, i, ctx: MarketContext, symbol):
@@ -340,8 +489,14 @@ DETECTORS = {
 
 def run_detectors(candles, i, ctx: MarketContext, symbol):
     out = []
+    base = symbol.split("-")[0].upper()
     for sid in ACTIVE_SCENARIOS:
         if symbol not in SCENARIO_SYMBOLS[sid]:
+            continue
+        # گشت کشف ترند F1 (از v3.4.0): خارج از «انتخاب AI + ارزهای اصلی» اسکن نشو.
+        # فقط F1 فیلتر می‌شود؛ F2–F5 روی کل استخر خودشان باقی می‌مانند.
+        if sid == "F1" and getattr(ctx, "f1_universe", None) is not None \
+                and base not in ctx.f1_universe:
             continue
         try:
             sig = DETECTORS[sid](candles, i, ctx, symbol)

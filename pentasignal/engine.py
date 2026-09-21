@@ -128,72 +128,92 @@ class Engine:
         }
         skip_details = []  # حداکثر چند نمونه برای خوانایی لاگ
 
+        # ----- گاردهای پرتفویی W2 (از v3.3.0) — هم‌معنا با RiskEngine خوسرو -----
+        guards = {"open_count": None, "daily_r": None, "halted": ""}
+        if settings.PORTFOLIO_GUARDS:
+            guards["open_count"] = len(store.open_signals())
+            guards["daily_r"] = store.realized_r_on(close_dt.strftime("%Y-%m-%d"))
+            if guards["daily_r"] <= -abs(settings.MAX_DAILY_LOSS_R):
+                guards["halted"] = "circuit_breaker"
+            elif guards["open_count"] >= settings.MAX_OPEN_TRADES:
+                guards["halted"] = "max_open_trades"
+
         def _note(reason: str, symbol: str, sid: str = "-", detail: str = ""):
             if len(skip_details) < 40:
                 skip_details.append(f"{symbol} | {sid} | {reason}" + (f" | {detail}" if detail else ""))
 
-        for symbol in scenarios.UNION_SYMBOLS:
-            candles = ctx.candles30.get(symbol) or []
-            i = self._candle_index_at(candles, close_ts, 1800)
-            stats["symbols_scanned"] += 1
-            if i < 60:
-                stats["short_history"] += 1
-                _note("داده_ناکافی", symbol, detail=f"bars={len(candles)} idx={i}")
-                continue
-
-            # برای هر سناریوی مجاز این نماد، وضعیت را جدا گزارش کن
-            matched = {sig["scenario_id"]: sig for sig in scenarios.run_detectors(candles, i, ctx, symbol)}
-            for sid in scenarios.ACTIVE_SCENARIOS:
-                if symbol not in scenarios.SCENARIO_SYMBOLS.get(sid, []):
-                    continue
-                if sid not in matched:
-                    stats["no_setup"] += 1
-                    _note("شرایط_دیتکتور_برقرار_نیست", symbol, sid)
-                    continue
-
-                sig = matched[sid]
-                sc = scenarios.SCENARIOS[sid]
-
-                if store.has_open(symbol, sid):
-                    stats["has_open"] += 1
-                    _note("پوزیشن_باز_موجود", symbol, sid)
+        if guards["halted"]:
+            # مدار قطع/سقف پوزیشن فعال است — هیچ اسکن و صدوری انجام نمی‌شود؛
+            # تسویه پوزیشن‌های باز در settle_all (که قبل از detect_new اجرا می‌شود) ادامه دارد.
+            stats["halted_by_guard"] = guards["halted"]
+            logger.info(
+                "PORTFOLIO GUARD ACTIVE (%s): open=%s/%s daily_r=%+.2f — no new signals this tick",
+                guards["halted"], guards["open_count"], settings.MAX_OPEN_TRADES,
+                guards["daily_r"] if guards["daily_r"] is not None else 0.0,
+            )
+        else:
+            for symbol in scenarios.UNION_SYMBOLS:
+                candles = ctx.candles30.get(symbol) or []
+                i = self._candle_index_at(candles, close_ts, 1800)
+                stats["symbols_scanned"] += 1
+                if i < 60:
+                    stats["short_history"] += 1
+                    _note("داده_ناکافی", symbol, detail=f"bars={len(candles)} idx={i}")
                     continue
 
-                last_t = store.last_signal_time(symbol, sid)
-                if last_t and (close_dt - last_t).total_seconds() < sc["cooldown_h"] * 3600:
-                    stats["cooldown"] += 1
-                    left_h = sc["cooldown_h"] - (close_dt - last_t).total_seconds() / 3600
-                    _note("کول‌داون", symbol, sid, detail=f"باقی≈{left_h:.1f}h")
-                    continue
+                # برای هر سناریوی مجاز این نماد، وضعیت را جدا گزارش کن
+                matched = {sig["scenario_id"]: sig for sig in scenarios.run_detectors(candles, i, ctx, symbol)}
+                for sid in scenarios.ACTIVE_SCENARIOS:
+                    if symbol not in scenarios.SCENARIO_SYMBOLS.get(sid, []):
+                        continue
+                    if sid not in matched:
+                        stats["no_setup"] += 1
+                        _note("شرایط_دیتکتور_برقرار_نیست", symbol, sid)
+                        continue
 
-                if self.entry_price_provider:
-                    entry = self.entry_price_provider(symbol, close_ts)
-                else:
-                    entry = float(sig["entry_hint"])
-                if not entry or entry <= 0:
-                    stats["no_entry_price"] += 1
-                    _note("قیمت_ورود_نامعتبر", symbol, sid)
-                    continue
+                    sig = matched[sid]
+                    sc = scenarios.SCENARIOS[sid]
 
-                row = self._entry_row(sig, entry, close_dt, entry_candle_ts=close_ts)
-                store.append_signal(row)
-                store.append_event(row["issued_at_tehran"], row["signal_id"],
-                                   "SIGNAL", f"entry={entry:.10f}")
-                sig2 = dict(sig)
-                sig2.update({
-                    "entry_price": row["entry_price"], "stop_loss": row["stop_loss"],
-                    "take_profit": row["take_profit"], "exit_mode": row["exit_mode"],
-                    "exit_param": row["exit_param"], "candle_close_tehran": row["candle_close_tehran"],
-                })
-                log = MsgLog(ts=row["issued_at_tehran"], kind="SIGNAL",
-                             text=msg.format_signal(sig2), signal_id=row["signal_id"],
-                             meta={"symbol": symbol, "scenario_id": sid,
-                                   "direction": sig["direction"]})
-                self._send(log)
-                store.update_signal(row["signal_id"],
-                                    telegram_message_id=log.message_id)
-                logs.append(log)
-                stats["issued"] += 1
+                    if store.has_open(symbol, sid):
+                        stats["has_open"] += 1
+                        _note("پوزیشن_باز_موجود", symbol, sid)
+                        continue
+
+                    last_t = store.last_signal_time(symbol, sid)
+                    if last_t and (close_dt - last_t).total_seconds() < sc["cooldown_h"] * 3600:
+                        stats["cooldown"] += 1
+                        left_h = sc["cooldown_h"] - (close_dt - last_t).total_seconds() / 3600
+                        _note("کول‌داون", symbol, sid, detail=f"باقی≈{left_h:.1f}h")
+                        continue
+
+                    if self.entry_price_provider:
+                        entry = self.entry_price_provider(symbol, close_ts)
+                    else:
+                        entry = float(sig["entry_hint"])
+                    if not entry or entry <= 0:
+                        stats["no_entry_price"] += 1
+                        _note("قیمت_ورود_نامعتبر", symbol, sid)
+                        continue
+
+                    row = self._entry_row(sig, entry, close_dt, entry_candle_ts=close_ts)
+                    store.append_signal(row)
+                    store.append_event(row["issued_at_tehran"], row["signal_id"],
+                                       "SIGNAL", f"entry={entry:.10f}")
+                    sig2 = dict(sig)
+                    sig2.update({
+                        "entry_price": row["entry_price"], "stop_loss": row["stop_loss"],
+                        "take_profit": row["take_profit"], "exit_mode": row["exit_mode"],
+                        "exit_param": row["exit_param"], "candle_close_tehran": row["candle_close_tehran"],
+                    })
+                    log = MsgLog(ts=row["issued_at_tehran"], kind="SIGNAL",
+                                 text=msg.format_signal(sig2), signal_id=row["signal_id"],
+                                 meta={"symbol": symbol, "scenario_id": sid,
+                                       "direction": sig["direction"]})
+                    self._send(log)
+                    store.update_signal(row["signal_id"],
+                                        telegram_message_id=log.message_id)
+                    logs.append(log)
+                    stats["issued"] += 1
 
         # ----- گزارش تشخیصی برای لاگ Actions -----
         lines = [
@@ -207,6 +227,45 @@ class Engine:
             f"رد — کول‌داون فعال: {stats['cooldown']}",
             f"رد — قیمت ورود نامعتبر: {stats['no_entry_price']}",
         ]
+        if settings.PORTFOLIO_GUARDS:
+            lines.append(
+                f"گارد پرتفویی W2: پوزیشن باز {guards['open_count']}/{settings.MAX_OPEN_TRADES}"
+                f" · R امروز {guards['daily_r']:+.2f} (آستانه {-abs(settings.MAX_DAILY_LOSS_R):+.1f}R)"
+            )
+        di = getattr(ctx, "discovery_info", None)
+        if di:
+            sel = di.get("selected") or {}
+            ai = di.get("ai") or {}
+            lines.append(
+                f"کشف ترند F1 (v3.4.0): حالت {sel.get('mode')} · منابع سالم "
+                f"{','.join(di.get('sources_ok') or []) or '-'}"
+                f" · اخبار {ai.get('news_count', '-')}"
+                f" · AI {ai.get('model') or 'خاموش'}"
+                f" · سنتیمنت {ai.get('sentiment') or '-'}"
+                f" ({ai.get('sentiment_confidence', '-')}%)"
+            )
+            if ai.get("market_summary"):
+                lines.append(f"خلاصه AI: {ai['market_summary']}")
+            rows = sel.get("rows") or []
+            if rows:
+                lines.append("تاییدیه‌های AI: " + " | ".join(
+                    f"{r['symbol']}={r['direction'] or '-'}({r['confidence'] if r['confidence'] is not None else '-'})"
+                    for r in rows[:12]
+                ))
+            lines.append(
+                f"دنیسکاوری F1: {len(sel.get('universe') or [])} نماد "
+                f"[{','.join(sorted(sel.get('universe') or []))}] — بقیه استخر فقط F2–F5"
+            )
+        if guards["halted"] == "circuit_breaker":
+            lines.append(
+                f"⛔ مدار قطع روزانه فعال: R امروز {guards['daily_r']:+.2f} ≤ "
+                f"{-abs(settings.MAX_DAILY_LOSS_R):+.1f}R — تا پایان روز هیچ سیگنال جدیدی صادر نمی‌شود"
+            )
+        elif guards["halted"] == "max_open_trades":
+            lines.append(
+                f"⛔ سقف پوزیشن باز پر است: {guards['open_count']}/{settings.MAX_OPEN_TRADES}"
+                " — تا آزاد شدن پوزیشن‌ها هیچ سیگنال جدیدی صادر نمی‌شود"
+            )
         if skip_details:
             lines.append("--- نمونه دلایل رد (حداکثر 40) ---")
             lines.extend(skip_details)

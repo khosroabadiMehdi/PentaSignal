@@ -1,5 +1,5 @@
-# PentaSignal v3.1.4 — هر ۳۰ دقیقه از 07:00 تا 20:00 تهران
-name: "PentaSignal v3.1.4 · Signal 07–20"
+# PentaSignal v3.4.0 — هر ۳۰ دقیقه از 07:00 تا 20:00 تهران
+name: "PentaSignal v3.4.0 · Signal 07–20"
 
 on:
   schedule:
@@ -14,7 +14,7 @@ concurrency:
 
 jobs:
   tick:
-    name: "v3.1.4 · تیک 30m — سیگنال + تسویه + آرشیو 1m"
+    name: "v3.4.0 · تیک 30m — سیگنال + تسویه + آرشیو 1m"
     runs-on: ubuntu-latest
     timeout-minutes: 15
     permissions:

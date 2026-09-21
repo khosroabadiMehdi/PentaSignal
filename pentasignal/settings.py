@@ -1,9 +1,9 @@
-# settings.py — PentaSignal v2.1
+# settings.py — PentaSignal v3.4.0
 # تنظیمات سراسری: نسخه، مسیرها، پنجره‌های زمانی تهران، کارمزد و سایز پوزیشن
 
 import os
 
-VERSION = "3.1.4"
+VERSION = "3.4.0"
 
 # ---------- مسیرها ----------
 BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))  # root پروژه
@@ -52,6 +52,31 @@ POSITION_SIZE_USD = 10.0
 FEE_RT = 0.002               # کارمزد رفت‌وبرگشت 0.2٪ (مطابق بک‌تست پنتا)
 LOOKBACK_DAYS_30M = 32       # تاریخچه 30m برای اندیکاتورها
 LOOKBACK_DAYS_4H = 35        # تاریخچه 4h برای گیت رژیم BTC
+
+# ---------- گاردهای پرتفویی W2 (از v3.3.0) ----------
+# پورت هم‌معنای RiskEngine خوسرو در مسیر زنده پنتا:
+#   • مدار قطع روزانه: بعد از ضرر تجمعی ≤ -MAX_DAILY_LOSS_R در یک روز تهران،
+#     هیچ سیگنال جدیدی تا پایان آن روز صادر نمی‌شود (تسویه پوزیشن‌های باز ادامه دارد)
+#   • سقف سراسری پوزیشن باز: با MAX_OPEN_TRADES پوزیشن باز (همه سناریوها)، صدور جدید متوقف می‌شود
+# PORTFOLIO_GUARDS=0 → غیرفعال (فقط برای شبیه‌سازی/پژوهش؛ در تولید همیشه روشن بماند)
+PORTFOLIO_GUARDS = os.getenv("PORTFOLIO_GUARDS", "1") == "1"
+MAX_OPEN_TRADES = int(os.getenv("MAX_OPEN_TRADES", "5"))
+MAX_DAILY_LOSS_R = float(os.getenv("MAX_DAILY_LOSS_R", "3.0"))
+
+# ---------- کشف ترند + مشورت AI برای F1 (از v3.4.0) ----------
+# خط لوله F1: ترند چندمنبعی (CoinGecko+Binance+F&G) → خواندن اخبار (RSS/CryptoPanic) →
+# مشورت AI (تاییدیه نمادها و جهت‌ها) → انتخاب چند ارز → این انتخاب‌ها + ارزهای اصلی
+# به چک و تولید سیگنال (RuleSignalEngine) می‌روند و حکم AI در fusion موتور ادغام می‌شود.
+# بدون AI_API_KEY → فال‌بک: برترین‌های چندمنبعی + ارزهای اصلی (رایگان، هیچ‌چیز fatal نیست)
+F1_DISCOVERY = os.getenv("F1_DISCOVERY", "1") == "1"
+F1_MAIN_COINS = [s.strip().upper() for s in os.getenv(
+    "F1_MAIN_COINS", "BTC,ETH,BNB,SOL,XRP").split(",") if s.strip()]
+F1_DISCOVERY_TOP_N = int(os.getenv("F1_DISCOVERY_TOP_N", "8"))   # سقف انتخاب غیرِ اصلی
+F1_AI_SELECT_MIN_CONF = int(os.getenv("F1_AI_SELECT_MIN_CONF", "55"))  # حداقل اطمینان AI برای انتخاب
+F1_AI_TTL_HOURS = float(os.getenv("F1_AI_TTL_HOURS", "4.0"))     # کش حکم AI (کنترل هزینه LLM)
+F1_NEWS_ENABLED = os.getenv("F1_NEWS_ENABLED", "1") == "1"
+F1_NEWS_MAX = int(os.getenv("F1_NEWS_MAX", "10"))
+F1_DISCOVERY_TIMEOUT = int(os.getenv("F1_DISCOVERY_TIMEOUT", "8"))  # ثانیه، هر درخواست
 
 # ---------- نگهداری CSV ----------
 CSV_KEEP_DAYS = 90           # فایل‌های سیگنال/رویداد 90 روزه غلتان می‌شوند
