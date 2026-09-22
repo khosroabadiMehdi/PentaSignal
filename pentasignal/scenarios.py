@@ -131,8 +131,8 @@ class MarketContext:
 
     فیلدهای کشف ترند (از v3.4.0 — فقط در مسیر زنده توسط discovery.apply پر می‌شوند؛
     در شبیه‌ساز/بک‌تست None می‌مانند یعنی F1 بدون فیلتر روی کل استخر اسکن می‌شود):
-      f1_universe    — مجموعه نمادهای پایه مجاز برای F1 (انتخاب AI + ارزهای اصلی)
-      khosro_ai      — AIAnalysis خوسرو → داخل detect_F1 به snapshot می‌چسبد (fusion)
+      f1_universe    — مجموعه نمادهای پایه مجاز برای F1 (انتخاب چندمنبعی + ارزهای اصلی؛ بدون AI)
+      khosro_ai      — منسوخ (از v3.5.0 همیشه None — سازگاری با موتور خوسرو)
       discovery_info — خلاصه کشف ترند برای گزارش تشخیصی Actions
     """
 
@@ -186,35 +186,6 @@ def _base_signal(sc, symbol, direction, i, entry, sl, atr_val, extra=None, reaso
     if extra:
         sig.update(extra)
     return sig
-
-
-
-def _f1_rows_from_kucoin(candles, i):
-    """30m KuCoin → ردیف خام 1h سبک بایننس برای تغذیه RuleSignalEngine."""
-    src = candles[: i + 1]
-    if len(src) < 2:
-        return []
-    bars = []
-    start = len(src) % 2
-    for j in range(start, len(src), 2):
-        chunk = src[j:j + 2]
-        if len(chunk) == 1:
-            bars.append(chunk[0])
-            continue
-        a, b = chunk[0], chunk[1]
-        bars.append({
-            "t": a.get("t", 0),
-            "o": a["o"], "h": max(a["h"], b["h"]), "l": min(a["l"], b["l"]),
-            "c": b["c"], "v": float(a.get("v") or 0) + float(b.get("v") or 0),
-        })
-    rows = []
-    for c in bars:
-        t0 = int(c.get("t") or 0)
-        ms = t0 if t0 > 10_000_000_000 else t0 * 1000
-        o, h, l, cl, v = c["o"], c["h"], c["l"], c["c"], c.get("v") or 0
-        rows.append([ms, str(o), str(h), str(l), str(cl), str(v), ms + 3_599_999,
-                     "0", 0, "0", "0", "0"])
-    return rows
 
 
 

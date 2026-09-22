@@ -131,6 +131,7 @@ class Engine:
             "has_open": 0,
             "cooldown": 0,
             "no_entry_price": 0,
+            "cap_blocked": 0,
             "issued": 0,
         }
         skip_details = []  # حداکثر چند نمونه برای خوانایی لاگ
@@ -194,6 +195,17 @@ class Engine:
                         _note("پوزیشن_باز_موجود", symbol, sid)
                         continue
 
+                    # گارد W2 — بررسی مجدد در حین اسکن: صدور سیگنال‌های همین تیک
+                    # هم در سقف پوزیشن باز حساب می‌شود (فیکس v3.5.5 — تیک 15:30
+                    # روز 2026-09-21 ده سیگنال یکجا صادر کرده بود و سقف ۵ را دور زد)
+                    if settings.PORTFOLIO_GUARDS and guards["open_count"] is not None:
+                        open_now = guards["open_count"] + stats["issued"]
+                        if open_now >= settings.MAX_OPEN_TRADES:
+                            stats["cap_blocked"] += 1
+                            _note("سقف_پوزیشن_باز", symbol, sid,
+                                  detail=f"open={open_now}/{settings.MAX_OPEN_TRADES}")
+                            continue
+
                     last_t = store.last_signal_time(symbol, sid)
                     if last_t and (close_dt - last_t).total_seconds() < sc["cooldown_h"] * 3600:
                         stats["cooldown"] += 1
@@ -242,6 +254,10 @@ class Engine:
             f"رد — کول‌داون فعال: {stats['cooldown']}",
             f"رد — قیمت ورود نامعتبر: {stats['no_entry_price']}",
         ]
+        if stats.get("cap_blocked"):
+            lines.append(
+                f"رد — سقف پوزیشن باز ({settings.MAX_OPEN_TRADES}): {stats['cap_blocked']}"
+            )
         if settings.PORTFOLIO_GUARDS:
             lines.append(
                 f"گارد پرتفویی W2: پوزیشن باز {guards['open_count']}/{settings.MAX_OPEN_TRADES}"
@@ -250,7 +266,6 @@ class Engine:
         di = getattr(ctx, "discovery_info", None)
         if di:
             sel = di.get("selected") or {}
-            ai = di.get("ai") or {}
             lines.append(
                 f"کشف ترند F1: حالت {sel.get('mode')} · منابع "
                 f"{','.join(di.get('sources_ok') or []) or '-'} "

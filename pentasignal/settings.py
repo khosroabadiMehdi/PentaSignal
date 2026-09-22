@@ -1,9 +1,9 @@
-# settings.py — PentaSignal v3.5.1
+# settings.py — PentaSignal v3.5.5
 # تنظیمات سراسری: نسخه، مسیرها، پنجره‌های زمانی تهران، کارمزد و سایز پوزیشن
 
 import os
 
-VERSION = "3.5.3"
+VERSION = "3.5.5"
 
 # ---------- مسیرها ----------
 BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))  # root پروژه

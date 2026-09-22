@@ -131,7 +131,7 @@ def run_once(engine: Engine, forced_mode: str | None = None) -> int:
     close_dt = ts_to_tehran(close_ts)
     ctx = fetch_market(ts, mode)
     if mode == "signal":
-        # کشف ترند چندمنبعی + مشورت AI برای F1 (از v3.4.0) — همیشه بی‌خطر:
+        # کشف ترند چندمنبعی بدون AI برای F1 (از v3.5.0) — همیشه بی‌خطر:
         # هر خطایی یعنی F1 بدون فیلتر روی کل استخر اسکن می‌شود (رفتار v3.3.0).
         if settings.F1_DISCOVERY:
             try:

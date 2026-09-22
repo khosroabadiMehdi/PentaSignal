@@ -1,3 +1,36 @@
+## 3.5.5 — two real bugs found from the 2026-09-21 nightly report
+
+- **Position cap bypass (W2 guard):** `MAX_OPEN_TRADES` was only checked once before the
+  scan; the 15:30 tick on 2026-09-21 issued **10 F1 signals in one tick** (1 open → 11),
+  blowing the 5-position cap. The cap is now re-checked **per issuance** during the scan —
+  extra candidates are rejected with reason `سقف_پوزیشن_باز` and reported in the Actions log.
+- **Nightly report dropped after-midnight closes:** if the nightly runs late (Actions cron
+  delay — it ran 04:33 instead of 02:00) and a position closes between midnight and report
+  time, it appeared NOWHERE: not in "settled today" (exit date is the next day) and not in
+  "still open" (status is not OPEN). Real case: XRP TP +0.32$ at 02:37 → report claimed
+  PnL +0.01$, win rate 66.7%, best = ETH +0.26$ and 7 open. New third bucket
+  «بسته‌شده بعد از نیمه‌شب» lists those closes, adds them to a combined PnL line, and
+  best/worst now consider them. Report header also shows generation time.
+- Message labels clarified: «وین‌ریت روز» / «PnL روز» are day-scoped; open list is
+  portfolio-wide. `reports/*.json` gains `closed_after_midnight`.
+- **F1–F5 detector/exit logic: بدون تغییر.**
+
+## 3.5.4 — docs sync with the AI-free architecture (no logic change)
+
+- README: badge/«نسخه جاری» → 3.5.4 · F1 section rewritten to the **AI-free** multi-source
+  discovery (CoinGecko + KuCoin; no news/LLM/fusion) · workflows table v3.5.4 ·
+  secrets = Telegram only (+ optional COINGECKO_API_KEY) · config table now lists the real
+  env vars (`F1_TREND_EXTRA_N`, `F1_BINANCE_MD`, …) and drops dead AI ones
+- `.env.example`: AI/CRYPTOPANIC key block removed (AI is gone since 3.5.0); adds
+  `F1_TREND_EXTRA_N` / `F1_BINANCE_MD`
+- `docs/STRATEGY.md`: F1 discovery pipeline + F1 profile updated to the no-AI design;
+  Binance 1h wording corrected to KuCoin 1h primary
+- Dead code removed: duplicate `_f1_rows_from_kucoin` definition, unused `ai` variable in
+  the engine report; stale comments fixed (`settings.py` header, `run_bot.py`,
+  `MarketContext` docstring)
+- Packaging: shipped without `__pycache__/*.pyc`
+- **F1–F5 detector/exit logic: بدون تغییر.**
+
 ## 3.5.3 — silence Binance HTTP 451 on GitHub Actions (no logic change)
 
 - F1 already preferred KuCoin 1h; Binance depth/funding was optional and already empty on 451.
