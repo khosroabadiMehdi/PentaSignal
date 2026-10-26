@@ -1,149 +1,170 @@
 {
   "ADA-USDT": {
-    "updated_at": "2026-10-26 20:11:27",
+    "updated_at": "2026-10-27 00:36:08",
     "days": [
-      "2026-10-26"
+      "2026-10-26",
+      "2026-10-27"
     ],
-    "bars_last_written": 208
+    "bars_last_written": 253
   },
   "ATOM-USDT": {
-    "updated_at": "2026-10-26 20:11:27",
+    "updated_at": "2026-10-27 00:36:08",
     "days": [
-      "2026-10-26"
+      "2026-10-26",
+      "2026-10-27"
     ],
-    "bars_last_written": 205
+    "bars_last_written": 250
   },
   "AVAX-USDT": {
-    "updated_at": "2026-10-26 20:11:28",
+    "updated_at": "2026-10-27 00:36:08",
     "days": [
-      "2026-10-26"
+      "2026-10-26",
+      "2026-10-27"
     ],
-    "bars_last_written": 206
+    "bars_last_written": 251
   },
   "BNB-USDT": {
-    "updated_at": "2026-10-26 20:11:28",
+    "updated_at": "2026-10-27 00:36:09",
     "days": [
-      "2026-10-26"
+      "2026-10-26",
+      "2026-10-27"
     ],
-    "bars_last_written": 208
+    "bars_last_written": 253
   },
   "BTC-USDT": {
-    "updated_at": "2026-10-26 20:11:28",
+    "updated_at": "2026-10-27 00:36:09",
     "days": [
-      "2026-10-26"
+      "2026-10-26",
+      "2026-10-27"
     ],
-    "bars_last_written": 208
+    "bars_last_written": 253
   },
   "DOGE-USDT": {
-    "updated_at": "2026-10-26 20:11:28",
+    "updated_at": "2026-10-27 00:36:09",
     "days": [
-      "2026-10-26"
+      "2026-10-26",
+      "2026-10-27"
     ],
-    "bars_last_written": 208
+    "bars_last_written": 253
   },
   "DOT-USDT": {
-    "updated_at": "2026-10-26 20:11:29",
+    "updated_at": "2026-10-27 00:36:09",
     "days": [
-      "2026-10-26"
+      "2026-10-26",
+      "2026-10-27"
     ],
-    "bars_last_written": 208
+    "bars_last_written": 253
   },
   "ETH-USDT": {
-    "updated_at": "2026-10-26 20:11:29",
+    "updated_at": "2026-10-27 00:36:10",
     "days": [
-      "2026-10-26"
+      "2026-10-26",
+      "2026-10-27"
     ],
-    "bars_last_written": 208
+    "bars_last_written": 253
   },
   "FIL-USDT": {
-    "updated_at": "2026-10-26 20:11:29",
+    "updated_at": "2026-10-27 00:36:10",
     "days": [
-      "2026-10-26"
+      "2026-10-26",
+      "2026-10-27"
     ],
-    "bars_last_written": 204
+    "bars_last_written": 249
   },
   "INJ-USDT": {
-    "updated_at": "2026-10-26 20:11:29",
+    "updated_at": "2026-10-27 00:36:10",
     "days": [
-      "2026-10-26"
+      "2026-10-26",
+      "2026-10-27"
     ],
-    "bars_last_written": 207
+    "bars_last_written": 252
   },
   "LINK-USDT": {
-    "updated_at": "2026-10-26 20:11:29",
+    "updated_at": "2026-10-27 00:36:10",
     "days": [
-      "2026-10-26"
+      "2026-10-26",
+      "2026-10-27"
     ],
-    "bars_last_written": 208
+    "bars_last_written": 253
   },
   "LTC-USDT": {
-    "updated_at": "2026-10-26 20:11:30",
+    "updated_at": "2026-10-27 00:36:10",
     "days": [
-      "2026-10-26"
+      "2026-10-26",
+      "2026-10-27"
     ],
-    "bars_last_written": 207
+    "bars_last_written": 252
   },
   "NEAR-USDT": {
-    "updated_at": "2026-10-26 20:11:30",
+    "updated_at": "2026-10-27 00:36:11",
     "days": [
-      "2026-10-26"
+      "2026-10-26",
+      "2026-10-27"
     ],
-    "bars_last_written": 208
+    "bars_last_written": 253
   },
   "OP-USDT": {
-    "updated_at": "2026-10-26 20:11:30",
+    "updated_at": "2026-10-27 00:36:11",
     "days": [
-      "2026-10-26"
+      "2026-10-26",
+      "2026-10-27"
     ],
-    "bars_last_written": 190
+    "bars_last_written": 235
   },
   "POL-USDT": {
-    "updated_at": "2026-10-26 20:11:30",
+    "updated_at": "2026-10-27 00:36:11",
     "days": [
-      "2026-10-26"
+      "2026-10-26",
+      "2026-10-27"
     ],
-    "bars_last_written": 203
+    "bars_last_written": 248
   },
   "SEI-USDT": {
-    "updated_at": "2026-10-26 20:11:30",
+    "updated_at": "2026-10-27 00:36:11",
     "days": [
-      "2026-10-26"
+      "2026-10-26",
+      "2026-10-27"
     ],
-    "bars_last_written": 208
+    "bars_last_written": 253
   },
   "SOL-USDT": {
-    "updated_at": "2026-10-26 20:11:31",
+    "updated_at": "2026-10-27 00:36:12",
     "days": [
-      "2026-10-26"
+      "2026-10-26",
+      "2026-10-27"
     ],
-    "bars_last_written": 208
+    "bars_last_written": 253
   },
   "SUI-USDT": {
-    "updated_at": "2026-10-26 20:11:31",
+    "updated_at": "2026-10-27 00:36:12",
     "days": [
-      "2026-10-26"
+      "2026-10-26",
+      "2026-10-27"
     ],
-    "bars_last_written": 208
+    "bars_last_written": 253
   },
   "TIA-USDT": {
-    "updated_at": "2026-10-26 20:11:31",
+    "updated_at": "2026-10-27 00:36:12",
     "days": [
-      "2026-10-26"
+      "2026-10-26",
+      "2026-10-27"
     ],
-    "bars_last_written": 197
+    "bars_last_written": 242
   },
   "XAUT-USDT": {
-    "updated_at": "2026-10-26 20:11:31",
+    "updated_at": "2026-10-27 00:36:12",
     "days": [
-      "2026-10-26"
+      "2026-10-26",
+      "2026-10-27"
     ],
-    "bars_last_written": 207
+    "bars_last_written": 252
   },
   "XRP-USDT": {
-    "updated_at": "2026-10-26 20:11:32",
+    "updated_at": "2026-10-27 00:36:13",
     "days": [
-      "2026-10-26"
+      "2026-10-26",
+      "2026-10-27"
     ],
-    "bars_last_written": 208
+    "bars_last_written": 253
   }
 }
